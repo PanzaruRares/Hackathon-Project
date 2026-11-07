@@ -168,6 +168,9 @@ def normalize_input(data: dict) -> dict:
             "lat": float(item["lat"]),
             "lon": float(item["lon"]),
             "monthly_price_eur": price,
+            # procentul acoperit masurat de P1 (web/sightline-view.js); lipsa -> estimarea din traffic.py
+            "occluded_pct": (None if item.get("occluded_pct") is None
+                             else min(max(float(item["occluded_pct"]), 0.0), 100.0)),
         })
     if not locations:
         raise ValueError("nu a fost trimisa nicio locatie")
@@ -194,6 +197,7 @@ def locations_from_input(data: dict, roads: dict | None = None) -> list[Location
         if isinstance(price, list):
             price = tuple(price)
         info = analyze_coordinates(lat, lon, height)
+        info["occluded_source"] = "estimat" if item["occluded_pct"] is None else "masurat"
         if roads is not None:
             roads[item["location_id"]] = info
         locations.append(Location(
@@ -203,7 +207,7 @@ def locations_from_input(data: dict, roads: dict | None = None) -> list[Location
             monthly_price_eur=price,
             daily_cars_est=info["daily_cars_est"],
             visible_seconds=info["visible_seconds"],
-            occluded_pct=info["occluded_pct"],
+            occluded_pct=info["occluded_pct"] if item["occluded_pct"] is None else item["occluded_pct"],
             address=info["road_name"],
         ))
         print(f"  {locations[-1].location_id}: {info['road_name']} ({info['road_type']}, "
@@ -227,13 +231,17 @@ def analyze(data: dict) -> dict:
         s["centrality_factor"] = road["centrality_factor"]
         s["speed_kmh"] = road["speed_kmh"]
         s["visible_surface_pct"] = 100 - s["occluded_pct"]
+        s["occluded_source"] = road["occluded_source"]
     best = best_location(ranked)
     return {
         "best_location_id": best["location_id"] if best else None,
         "best": best,
         "locations": ranked,
         "estimates_note": ("Masinile pe zi sunt estimate din tipul drumului si benzi (OpenStreetMap). "
-                           "Secundele vizibile si suprafata vizibila sunt aproximari pana vin datele din Unity."),
+                           + ("Suprafata vizibila e masurata cu raze de la 1,2 m prin cladirile din OpenStreetMap si modelul 3D Google; "
+                              "secundele vizibile sunt estimate din viteza."
+                              if all(s["occluded_source"] == "masurat" for s in ranked) else
+                              "Secundele vizibile si suprafata vizibila sunt aproximari.")),
     }
 
 

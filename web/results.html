@@ -1046,6 +1046,9 @@
       <p class="footnote">Randarea este demonstrativă. Scorul creativului este media ponderată a 6 criterii măsurate local (OCR + OpenCV); pragurile sunt orientative.</p>
     </main>
 
+    <!-- P1: vederea șoferului (Street View + panou) și vizibilitatea; cheia Google stă în config.local.js (neurcat pe git) -->
+    <script src="config.local.js"></script>
+    <script src="sightline-view.js"></script>
     <script>
       const campaign = JSON.parse(sessionStorage.getItem("sightline-campaign") || "null");
       const distanceCaption = document.querySelector("#distance-caption");
@@ -1416,6 +1419,8 @@
         document.querySelector("#ranking-list").textContent = "Se calculează…";
         document.querySelector("#data-badge").textContent = "Se calculează…";
         try {
+          // P1: procentul acoperit calculat de sightline-view.js (clădiri și copaci); fără el, scoring/ folosește valoarea implicită
+          const sightline = window.SightLineView ? await window.SightLineView.ready.catch(() => ({})) : {};
           const response = await fetch("/score", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1423,6 +1428,7 @@
               billboardSize: campaignData.billboardSize,
               locations: campaignData.locations.map(({ id, lat, lon, monthlyPriceEur }) => ({
                 id, lat, lon, monthlyPriceEur,
+                ...(sightline[id] ? { occluded_pct: sightline[id].occluded_pct } : {}),
               })),
             }),
           });
