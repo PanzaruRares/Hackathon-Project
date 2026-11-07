@@ -783,7 +783,7 @@
           <h1>O perspectivă mai clară.</h1>
           <p class="heading-copy">Previzualizarea randării 3D și verdictul statistic al campaniei tale.</p>
         </div>
-        <span class="demo-badge">Date demonstrative</span>
+        <span class="demo-badge" id="data-badge">Date demonstrative</span>
       </header>
 
       <section class="results-grid" aria-label="Randare și verdict">
@@ -877,24 +877,24 @@
         </article>
 
         <article class="card verdict-card">
-          <span class="label-pill">Verdict statistic · demo</span>
-          <h2>Poziția A oferă cel mai bun raport între vizibilitate și cost.</h2>
-          <p class="verdict-copy">În acest scenariu demonstrativ, suprafața reclamei rămâne vizibilă suficient timp pentru a fi observată din mers. Raportul include și o evaluare vizuală orientativă a creativului.</p>
+          <span class="label-pill" id="verdict-pill">Verdict statistic · demo</span>
+          <h2 id="verdict-title">Poziția A oferă cel mai bun raport între vizibilitate și cost.</h2>
+          <p class="verdict-copy" id="verdict-copy">În acest scenariu demonstrativ, suprafața reclamei rămâne vizibilă suficient timp pentru a fi observată din mers. Raportul include și o evaluare vizuală orientativă a creativului.</p>
           <div class="metrics" aria-label="Indicatori demonstrativi">
             <div class="metric">
-              <strong>18.420</strong>
+              <strong id="metric-impressions">18.420</strong>
               <span>impresii reale estimate / lună</span>
             </div>
             <div class="metric">
-              <strong>0,016 €</strong>
+              <strong id="metric-cost">0,016 €</strong>
               <span>cost / impresie reală</span>
             </div>
             <div class="metric">
-              <strong>68%</strong>
+              <strong id="metric-visible">68%</strong>
               <span>suprafață vizibilă</span>
             </div>
             <div class="metric">
-              <strong>4,2 s</strong>
+              <strong id="metric-seconds">4,2 s</strong>
               <span>timp vizibil estimat</span>
             </div>
           </div>
@@ -906,11 +906,11 @@
           <div class="detail-heading">
             <div>
               <h2>Clasament poziții</h2>
-              <p class="card-copy">Scoruri demonstrative pentru exemplu</p>
+              <p class="card-copy" id="ranking-copy">Scoruri demonstrative pentru exemplu</p>
             </div>
-            <span class="label-pill">Exemplu</span>
+            <span class="label-pill" id="ranking-pill">Exemplu</span>
           </div>
-          <div class="ranking">
+          <div class="ranking" id="ranking-list">
             <div class="ranking-row">
               <span class="rank-number">1</span>
               <div>
@@ -1300,6 +1300,127 @@
         }
 
         renderCreativeAnalysis(campaign);
+
+        if (campaign.locations.length > 0) {
+          loadScore(campaign);
+        }
+      }
+
+      // ---------- clasament real: pinurile -> scoring/server.py (POST /score) ----------
+
+      function pinLabel(locationId) {
+        const index = campaign.locations.findIndex((location) => location.id === locationId);
+        return index >= 0 ? `Pin ${index + 1}` : locationId;
+      }
+
+      function formatNumber(value, digits = 0) {
+        return Number(value).toLocaleString("ro-RO", {
+          minimumFractionDigits: digits,
+          maximumFractionDigits: digits,
+        });
+      }
+
+      function formatCost(value) {
+        return value == null ? "nevizibil" : `${formatNumber(value, 4)} €`;
+      }
+
+      async function loadScore(campaignData) {
+        const verdictCopy = document.querySelector("#verdict-copy");
+        const demoState = ["#verdict-title", "#metric-impressions", "#metric-cost", "#metric-visible",
+          "#metric-seconds", "#ranking-list"].map((selector) => {
+          const element = document.querySelector(selector);
+          return [element, element.innerHTML];
+        });
+        // Cat timp se calculeaza, nu mai aratam cifrele demonstrative.
+        document.querySelector("#verdict-title").textContent = "Se calculează cea mai bună locație…";
+        verdictCopy.textContent = "Caut strada fiecărui pin în OpenStreetMap și aplic formula de cost pe impresie reală.";
+        ["#metric-impressions", "#metric-cost", "#metric-visible", "#metric-seconds"].forEach((selector) => {
+          document.querySelector(selector).textContent = "…";
+        });
+        document.querySelector("#ranking-list").textContent = "Se calculează…";
+        document.querySelector("#data-badge").textContent = "Se calculează…";
+        try {
+          const response = await fetch("/score", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              billboardSize: campaignData.billboardSize,
+              locations: campaignData.locations.map(({ id, lat, lon, monthlyPriceEur }) => ({
+                id, lat, lon, monthlyPriceEur,
+              })),
+            }),
+          });
+          let result;
+          try {
+            result = await response.json();
+          } catch {
+            throw new Error(
+              `serverul a răspuns cu ${response.status}, dar nu este serverul SightLine — ai pornit probabil „python3 -m http.server”`
+            );
+          }
+          if (!response.ok) throw new Error(result.error || `eroare ${response.status}`);
+          renderScore(result);
+        } catch (error) {
+          demoState.forEach(([element, html]) => { element.innerHTML = html; });
+          document.querySelector("#data-badge").textContent = "Date demonstrative";
+          verdictCopy.textContent =
+            `Nu am putut calcula clasamentul (${error.message}). Pornește serverul cu „python3 scoring/server.py” și deschide site-ul de la http://localhost:8000. Cifrele de mai jos sunt demonstrative.`;
+        }
+      }
+
+      function renderScore(result) {
+        const best = result.best;
+        document.querySelector("#data-badge").textContent = "Estimare din coordonate";
+        document.querySelector("#verdict-pill").textContent = "Verdict statistic · estimare";
+
+        if (!best) {
+          document.querySelector("#verdict-title").textContent = "Niciun panou nu este vizibil din trafic.";
+          document.querySelector("#verdict-copy").textContent = result.estimates_note;
+        } else {
+          document.querySelector("#verdict-title").textContent =
+            `${pinLabel(best.location_id)} · ${best.road_name} are cel mai mic cost pe impresie reală.`;
+          document.querySelector("#verdict-copy").textContent =
+            `Coordonate: ${best.lat.toFixed(6)}, ${best.lon.toFixed(6)}. ` +
+            `Preț ${formatNumber(best.monthly_price_eur)} € / lună, ` +
+            `aprox. ${formatNumber(best.daily_cars_est)} mașini pe zi ` +
+            `(${best.road_type}, ${best.lanes} benzi, ${formatNumber(best.speed_kmh)} km/h). ` +
+            result.estimates_note;
+          document.querySelector("#metric-impressions").textContent = formatNumber(best.real_impressions_month);
+          document.querySelector("#metric-cost").textContent = formatCost(best.cost_per_real_impression_eur);
+          document.querySelector("#metric-visible").textContent = `${formatNumber(best.visible_surface_pct)}%`;
+          document.querySelector("#metric-seconds").textContent = `${formatNumber(best.visible_seconds, 1)} s`;
+        }
+
+        document.querySelector("#ranking-copy").textContent = "Cost pe impresie reală, de la cel mai mic";
+        document.querySelector("#ranking-pill").textContent = "Estimare";
+        const rows = result.locations.map((location) => {
+          const row = document.createElement("div");
+          row.className = "ranking-row";
+          const rank = document.createElement("span");
+          rank.className = "rank-number";
+          rank.textContent = String(location.rank);
+          const details = document.createElement("div");
+          const name = document.createElement("p");
+          name.className = "rank-name";
+          name.textContent = `${pinLabel(location.location_id)} · ${location.road_name}`;
+          const detail = document.createElement("p");
+          detail.className = "rank-detail";
+          detail.textContent =
+            `${formatNumber(location.daily_cars_est)} mașini/zi · ` +
+            `${formatNumber(location.real_impressions_month)} impresii/lună · ` +
+            `${formatNumber(location.monthly_price_eur)} €/lună`;
+          details.append(name, detail);
+          const value = document.createElement("div");
+          value.className = "rank-value";
+          const cost = document.createElement("strong");
+          cost.textContent = formatCost(location.cost_per_real_impression_eur);
+          const unit = document.createElement("span");
+          unit.textContent = "per impresie";
+          value.append(cost, unit);
+          row.append(rank, details, value);
+          return row;
+        });
+        document.querySelector("#ranking-list").replaceChildren(...rows);
       }
     </script>
   </body>
