@@ -26,6 +26,8 @@
 
   const LOG = [];   // jurnal scurt, pentru depanare: SightLineView.log
   const log = t => { LOG.push(`${new Date().toLocaleTimeString()} ${t}`); if (LOG.length > 200) LOG.shift(); };
+  // așteaptă o promisiune cel mult ms milisecunde
+  const withTimeout = (p, ms, what) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`${what}: peste ${Math.round(ms / 1000)} s`)), ms))]);
   const rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
   const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y }), add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y });
   const mul = (a, s) => ({ x: a.x * s, y: a.y * s }), len = a => Math.hypot(a.x, a.y);
@@ -34,37 +36,69 @@
   // ---------------------------------------------------------------- OpenStreetMap
   const osmMem = {};
   let osmQueue = Promise.resolve();
-  function overpass(lat, lon) {   // una câte una: Overpass refuză (429) cererile în paralel
-    const job = osmQueue.then(() => overpassNow(lat, lon));
+  function overpass(lat, lon) { return overpassNow(lat, lon); }
+  // cererile mari către Overpass merg una câte una (altfel răspunde 429); cele mici, pentru clădiri, în paralel
+  function overpassSerial(q, totalMs, rounds) {
+    const job = osmQueue.then(() => overpassQuery(q, totalMs, rounds));
     osmQueue = job.catch(() => null);
     return job;
   }
+  const OVERPASS_EPS = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter",
+                        "https://maps.mail.ru/osm/tools/overpass/api/interpreter"];
+  // o cerere Overpass, încercând pe rând serverele, cu limită totală de timp
+  async function overpassQuery(q, totalMs, rounds) {
+    const t0 = Date.now();
+    for (let i = 0; i < OVERPASS_EPS.length * rounds; i++) {
+      const left = totalMs - (Date.now() - t0); if (left <= 500) break;
+      if (i >= OVERPASS_EPS.length) await new Promise(r => setTimeout(r, Math.min(2000, left / 4)));
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), Math.max(500, totalMs - (Date.now() - t0)));
+      try {
+        const r = await fetch(OVERPASS_EPS[i % OVERPASS_EPS.length], { method: "POST", body: "data=" + encodeURIComponent(q),
+          headers: { "Content-Type": "application/x-www-form-urlencoded" }, signal: ctl.signal });
+        if (r.ok) return await r.json();
+      } catch (e) {} finally { clearTimeout(timer); }
+    }
+    return null;
+  }
+
+  // străzile din cache-ul serverului (scoring/server.py, GET /strazi): instant, fără internet; null în afara zonei
+  async function roadsFromServer(lat, lon) {
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 4000);
+    try {
+      const r = await fetch(`/strazi?lat=${lat}&lon=${lon}&r=${APPROACH_M + 40}`, { signal: ctl.signal });
+      if (!r.ok) return null;
+      const j = await r.json();
+      return j && j.elements && j.elements.length ? j.elements : null;
+    } catch (e) { return null; } finally { clearTimeout(timer); }
+  }
+
   async function overpassNow(lat, lon) {
-    const key = `sl_osm2_${lat.toFixed(5)}_${lon.toFixed(5)}`;
+    const key = `sl_osm3_${lat.toFixed(5)}_${lon.toFixed(5)}`;
     if (osmMem[key]) return osmMem[key];
     try { const c = localStorage.getItem(key); if (c) return (osmMem[key] = JSON.parse(c)); } catch (e) {}
-    const q = `[out:json][timeout:40];(
-      way(around:${APPROACH_M + 40},${lat},${lon})["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|living_street|service|road)$"];
-      way(around:${APPROACH_M + 20},${lat},${lon})["building"];
-      node(around:${APPROACH_M + 20},${lat},${lon})["natural"="tree"];
-      way(around:${APPROACH_M + 20},${lat},${lon})["natural"="tree_row"];
-    );out geom;`;
-    const eps = ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter",
-                 "https://maps.mail.ru/osm/tools/overpass/api/interpreter"];
-    for (let i = 0; i < 6; i++) {
-      const ep = eps[i % eps.length];
-      if (i >= eps.length) await new Promise(r => setTimeout(r, 3000));
-      try {
-        const r = await fetch(ep, { method: "POST", body: "data=" + encodeURIComponent(q),
-          headers: { "Content-Type": "application/x-www-form-urlencoded" } });
-        if (!r.ok) continue;
-        const json = await r.json();
-        osmMem[key] = json;
-        try { localStorage.setItem(key, JSON.stringify(json)); } catch (e) {}
-        return json;
-      } catch (e) {}
+    const around = APPROACH_M + 20;
+    const qObstacles = `way(around:${around},${lat},${lon})["building"];
+      node(around:${around},${lat},${lon})["natural"="tree"];
+      way(around:${around},${lat},${lon})["natural"="tree_row"];`;
+    let json = null;
+    const roads = await roadsFromServer(lat, lon);
+    if (roads) {
+      log(`străzi din cache-ul serverului: ${roads.length}`);
+      // clădirile și copacii: cerere separată, cu limită; fără ele mergem mai departe (marcat)
+      const obs = await overpassQuery(`[out:json][timeout:8];(${qObstacles});out geom;`, 6000, 1);
+      json = { elements: roads.concat(obs ? obs.elements || [] : []), noBuildings: !obs };
+      if (!obs) log("clădirile OSM n-au venit la timp: continui fără ele");
+    } else {
+      const q = `[out:json][timeout:40];(
+        way(around:${APPROACH_M + 40},${lat},${lon})["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|living_street|service|road)$"];
+        ${qObstacles}
+      );out geom;`;
+      json = await overpassSerial(q, 45000, 2);
+      if (!json) throw new Error("OpenStreetMap (Overpass) nu răspunde");
     }
-    throw new Error("OpenStreetMap (Overpass) nu răspunde");
+    osmMem[key] = json;
+    if (!json.noBuildings) { try { localStorage.setItem(key, JSON.stringify(json)); } catch (e) {} }
+    return json;
   }
 
   function buildingHeight(tags) {
@@ -261,7 +295,7 @@
       pin, L, G, c, n, r: { x: -n.y, y: n.x }, drive, buildings, trees, mountedOn,
       W: size.width || 12, H: size.height || 4,
       E: mount === "wall" ? Math.max(6, (size.height || 4) / 2 + 4) : 6, mount,
-      roadName: road.tags.name || road.tags.highway, lanes, oneway: road.oneway, moved,
+      roadName: road.tags.name || road.tags.highway, lanes, oneway: road.oneway, moved, noBuildings: !!json.noBuildings,
     };
   }
 
@@ -524,6 +558,7 @@
   // În realitate șoferul vede pe sub coroane, printre trunchiuri. De aceea ignorăm lovirile sub 3,5 m de la nivelul drumului
   // și continuăm raza; ce e mai sus (coroana reală, clădiri) blochează. Clădirile joase le prinde oricum OpenStreetMap.
   const CANOPY_BASE_M = 3.5;
+  const CZ_BUDGET_MS = 30000;   // cel mult 30 s de model 3D pe pin; altfel mergem mai departe fără el
   // Deasupra, o lovire în afara oricărei clădiri OSM e un copac. Coroanele din fotogrammetrie sunt umflate și pline,
   // dar frunzișul real lasă să se vadă printre ramuri (și toamna/iarna mult mai mult): un pătrățel din spatele unui copac
   // contează 35% vizibil, nu 0. În spatele unei clădiri contează 0.
@@ -539,8 +574,9 @@
       sc.onerror = () => rej(new Error("CesiumJS nu s-a încărcat")); document.head.appendChild(sc);
     });
     Cesium.Ion.defaultAccessToken = cesiumToken();
+    Cesium.RequestScheduler.maximumRequestsPerServer = 8;   // lasă loc și pentru pozele Street View
     const div = document.createElement("div");
-    div.style.cssText = "position:fixed;left:-12000px;top:0;width:1024px;height:640px;";
+    div.style.cssText = "position:fixed;left:-12000px;top:0;width:720px;height:450px;";   // mai mic = mai puține tile-uri de încărcat
     document.body.appendChild(div);
     const viewer = new Cesium.Viewer(div, { globe: false, baseLayerPicker: false, geocoder: false, homeButton: false, sceneModePicker: false,
       navigationHelpButton: false, timeline: false, animation: false, fullscreenButton: false, infoBox: false, selectionIndicator: false,
@@ -551,10 +587,14 @@
     sc.fog.enabled = false; sc.skyAtmosphere.show = false; sc.skyBox.show = false; sc.sun.show = false; sc.moon.show = false;
     sc.backgroundColor = Cesium.Color.BLACK;
     const tiles = await Cesium.createGooglePhotorealistic3DTileset();
-    tiles.maximumScreenSpaceError = 6;
+    tiles.maximumScreenSpaceError = 12;   // detaliu suficient pentru clădiri și coroane, se încarcă mult mai repede
     tiles.cullRequestsWhileMoving = false;
     viewer.scene.primitives.add(tiles);
     cz = { viewer, tiles };
+    viewer.scene.renderError.addEventListener((sc, e) => {   // randarea s-a oprit: o repornim (altfel razele nu mai lovesc nimic)
+      log(`3D: eroare de randare (${String(e && e.message || e).slice(0, 60)}), repornesc`);
+      setTimeout(() => { try { viewer.useDefaultRenderLoop = true; } catch (x) {} }, 50);
+    });
     return cz;
   }
 
@@ -576,17 +616,22 @@
     const scene = cz.viewer.scene, pts = [200, 150, 80, 30, 10].map(d => S.G(viewpoint(S, d)));
     cz.viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(S.pin.lon, S.pin.lat - 0.0022, 380),
       orientation: { heading: 0, pitch: rad(-50), roll: 0 } });
-    await czWait(5000);
+    // tile-urile pot veni greu: încercăm de mai multe ori (până la ~15 s) până lovesc razele cel puțin 3 puncte
     let hs = [];
-    for (const p of pts) {   // rază de sus în jos în fiecare punct al traseului
-      const top = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 1500), bottom = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, -200);
-      const dir = Cesium.Cartesian3.normalize(Cesium.Cartesian3.subtract(bottom, top, new Cesium.Cartesian3()), new Cesium.Cartesian3());
-      const hit = scene.pickFromRay(new Cesium.Ray(top, dir));
-      if (hit && hit.position) hs.push(Cesium.Cartographic.fromCartesian(hit.position).height);
+    for (let attempt = 0; attempt < 4 && hs.length < 3; attempt++) {
+      await czWait(attempt ? 3500 : 4000);
+      hs = [];
+      for (const p of pts) {   // rază de sus în jos în fiecare punct al traseului
+        const top = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, 1500), bottom = Cesium.Cartesian3.fromDegrees(p.lon, p.lat, -200);
+        const dir = Cesium.Cartesian3.normalize(Cesium.Cartesian3.subtract(bottom, top, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+        const hit = scene.pickFromRay(new Cesium.Ray(top, dir));
+        if (hit && hit.position) hs.push(Cesium.Cartographic.fromCartesian(hit.position).height);
+      }
+      if (S.czLate && S.czLate()) break;
     }
     if (hs.length < 3) {
       try {
-        const res = await scene.sampleHeightMostDetailed(pts.map(p => Cesium.Cartographic.fromDegrees(p.lon, p.lat)));
+        const res = await withTimeout(scene.sampleHeightMostDetailed(pts.map(p => Cesium.Cartographic.fromDegrees(p.lon, p.lat))), 4000, "nivelul solului");
         hs = res.map(c => c.height).filter(Number.isFinite);
       } catch (e) {}
     }
@@ -611,6 +656,10 @@
   // diferența de nivel dintre baza panoului și solul de sub fiecare panoramă Street View (pantă, trotuar)
   async function czGroundOffsets(S, shots) {
     if (!cz || S.roadLevel == null) return;
+    cz.viewer.useDefaultRenderLoop = true;
+    try { await czGroundOffsetsRun(S, shots); } finally { cz.viewer.useDefaultRenderLoop = false; }
+  }
+  async function czGroundOffsetsRun(S, shots) {
     const b = S.G(S.c);
     cz.viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(b.lon, b.lat - 0.0018, 300),
       orientation: { heading: 0, pitch: rad(-55), roll: 0 } });
@@ -632,10 +681,18 @@
   //  - ce acoperă orașul rămas contează ca frunziș (TREE_SEE); clădirile se scad separat din OSM.
   async function czRefine(S, onStep) {
     log(`${S.locId}: 3D start`);
-    await czInit();
+    try { return await czRefineRun(S, onStep); }
+    finally { if (cz) cz.viewer.useDefaultRenderLoop = false; }   // oprit cât nu calculăm (nu mai cere tile-uri)
+  }
+  async function czRefineRun(S, onStep) {
+    const deadline = Date.now() + CZ_BUDGET_MS;
+    S.czLate = () => Date.now() > deadline;
+    await withTimeout(czInit(), 20000, "încărcarea modelului 3D");
+    cz.viewer.useDefaultRenderLoop = true;
     log(`${S.locId}: 3D încărcat`);
     const road = await czRoadLevel(S);
     log(`${S.locId}: nivel drum ${road && road.toFixed(1)}`);
+    if (S.czLate()) throw new Error("oprit (prea lent)");
     if (road === null) throw new Error("modelul 3D nu are date pe traseu");
     S.roadLevel = road;
     const C3 = Cesium.Cartesian3, v = cz.viewer, t = cz.tiles;
@@ -678,6 +735,7 @@
           orientation: { heading: Math.atan2(to.x, to.y), pitch: Math.atan2(S.E - EYE_H, dist), roll: 0 } });
         v.camera.frustum.fov = Math.min(rad(60), Math.max(rad(4), 2 * Math.atan((S.W / 2 + 1) / Math.max(dist, 1)) * 1.3));
         await czWait(4000);
+        if (S.czLate()) throw new Error("oprit (prea lent)");
         log(`${S.locId}: ${d} m tile-uri gata`);
         t.show = false; await frames(2); const B = grab();
         t.show = true; await frames(2); const A = grab();
@@ -725,10 +783,15 @@
       try {
         log(`panoramă ${d} m`);
         const p = await findPano(S, d);
-        const im = new Image();
-        im.crossOrigin = "anonymous";   // ca să putem citi pixelii (frunzișul)
-        im.src = `https://maps.googleapis.com/maps/api/streetview?size=${IMG_W}x${IMG_H}&pano=${p.pano}&heading=${p.heading.toFixed(1)}&pitch=${p.pitch.toFixed(1)}&fov=${FOV}&return_error_code=true&key=${encodeURIComponent(key)}`;
-        await im.decode();
+        // fetch + createImageBitmap (un <img> cu decode() se poate bloca când pagina are și un WebGL activ)
+        const url = `https://maps.googleapis.com/maps/api/streetview?size=${IMG_W}x${IMG_H}&pano=${p.pano}&heading=${p.heading.toFixed(1)}&pitch=${p.pitch.toFixed(1)}&fov=${FOV}&return_error_code=true&key=${encodeURIComponent(key)}`;
+        const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 10000);
+        let im;
+        try {
+          const resp = await fetch(url, { signal: ctl.signal });
+          if (!resp.ok) throw new Error(`Street View ${resp.status}`);
+          im = await createImageBitmap(await resp.blob());
+        } finally { clearTimeout(timer); }
         const cv = document.createElement("canvas"); cv.width = IMG_W; cv.height = IMG_H;
         const g = cv.getContext("2d", { willReadFrequently: true }); g.drawImage(im, 0, 0, IMG_W, IMG_H);
         let pixels = null; try { pixels = g.getImageData(0, 0, IMG_W, IMG_H); } catch (e) {}
@@ -780,77 +843,111 @@
   }
 
   // ---------------------------------------------------------------- Vizibilitate pentru un pin: OSM (clădiri) + Cesium (copaci și restul)
-  async function computeFor(loc, mount, onStatus) {
+  // Calculul pe pin are două etape:
+  //  1) rapid (câteva secunde): străzi + clădiri OSM + pozele Street View → poze și clasament imediat;
+  //  2) rafinare (modelul 3D Google, ~20 s pe pin, una după alta): copacii, verificați cu poza → procent actualizat,
+  //     clasament recalculat la final. Dacă modelul 3D e lent sau cade, rămâne rezultatul din etapa 1.
+  function saveStore(loc, S, czError) {
+    const prev = store[loc.id];
+    store[loc.id] = {
+      key: S.key, source: S.source, occluded_pct: Math.round(S.vis.occluded_pct * 10) / 10, mount: S.mount,
+      by_distance: Object.fromEntries(DISTANCES.map(d => [d, Math.round(S.vis.byDistance[d].pct)])),
+      cesium_cells: S.czCells || (prev && prev.key === S.key ? prev.cesium_cells : null),
+      road_level: S.roadLevel != null ? S.roadLevel : (prev && prev.key === S.key ? prev.road_level : null),
+      cesium_error: czError || null, street_reach_m: Math.round(reach(S)), refined: !!S.refined,
+      road_name: S.roadName, buildings: S.buildings.length, osm_trees: S.trees.length, no_buildings: !!S.noBuildings,
+    };
+    try { sessionStorage.setItem("sightline-visibility", JSON.stringify(store)); } catch (e) {}
+  }
+
+  function applyCz(S, czCells) {
+    S.czCells = czCells;
+    const valid = DISTANCES.filter(d => czCells[d]);
+    valid.forEach(d => {
+      const v = S.vis.byDistance[d], cells = v.cells.map((ok, i) => ok ? Number(czCells[d][i]) : 0);
+      S.vis.byDistance[d] = { pct: 100 * cells.reduce((a, c) => a + c, 0) / cells.length, cells };
+    });
+    const visible = valid.reduce((a, d) => a + S.vis.byDistance[d].pct, 0) / (valid.length || 1);
+    S.vis.visible_pct = visible; S.vis.occluded_pct = 100 - visible;
+    S.source = "osm+cesium";
+    if (S.shots && Object.values(S.shots).some(x => x && x.pixels)) { photoCheck(S); S.source = "osm+cesium+foto"; }
+  }
+
+  async function computeFast(loc, mount) {
     const size = (campaign && campaign.billboardSize) || {};
-    const key = `v10|${loc.lat.toFixed(6)},${loc.lon.toFixed(6)}|${mount}|${size.width || 12}x${size.height || 4}`;
     log(`${loc.id}: OSM`);
     const json = await overpass(loc.lat, loc.lon);
     const S = buildScene(json, { lat: loc.lat, lon: loc.lon }, size, mount);
-    S.locId = loc.id;
+    S.locId = loc.id; S.mount = mount; S.source = "osm";
+    S.key = `v13|${loc.lat.toFixed(6)},${loc.lon.toFixed(6)}|${mount}|${size.width || 12}x${size.height || 4}`;
     S.vis = visibility(S);
-    let source = "osm";
-    const prev = store[loc.id];
-    let czError = null;
-    let czCells = prev && prev.key === key && /^osm\+cesium/.test(prev.source) ? prev.cesium_cells : null;
-    if (!czCells && cesiumToken()) {
-      if (onStatus) onStatus("Caut copacii și obstacolele în modelul 3D Google…");
-      const job = czQueue.then(() => czRefine(S, d => onStatus && onStatus(`Modelul 3D Google: raze de la ${d} m…`)));
-      czQueue = job.catch(() => null);
-      try { czCells = await job; }
-      catch (e) {
-        console.warn("SightLine: vizibilitatea Cesium a eșuat, reîncerc:", e);
-        const retry = czQueue.then(() => czRefine(S, d => onStatus && onStatus(`Modelul 3D Google (a doua încercare): ${d} m…`)));
-        czQueue = retry.catch(() => null);
-        try { czCells = await retry; } catch (e2) { czError = e2.message || String(e2); console.warn("SightLine: Cesium:", e2); }
-      }
-    }
-    if (czCells && S.roadLevel == null && prev && prev.key === key) S.roadLevel = prev.road_level;
-    if (czCells) {
-      source = "osm+cesium";
-      const valid = DISTANCES.filter(d => czCells[d]);
-      valid.forEach(d => {
-        const v = S.vis.byDistance[d], cells = v.cells.map((ok, i) => ok ? Number(czCells[d][i]) : 0);
-        S.vis.byDistance[d] = { pct: 100 * cells.reduce((a, c) => a + c, 0) / cells.length, cells };
-      });
-      const visible = valid.reduce((a, d) => a + S.vis.byDistance[d].pct, 0) / (valid.length || 1);
-      S.vis.visible_pct = visible; S.vis.occluded_pct = 100 - visible;
-    }
-    // pozele Street View (pentru afișare și pentru verificarea copacilor), nivelul solului, apoi verificarea cu poza
-    let photoChecked = false;
-    log(`${loc.id}: Cesium ${czCells ? "ok" : "nu"}; Street View…`);
     if (googleKey()) {
-      if (onStatus) onStatus("Încarc pozele Street View…");
-      try {
-        S.shots = await fetchShots(S);
-        log(`${loc.id}: poze ${Object.values(S.shots).filter(x => x && x.img).length}; nivel sol…`);
-        if (czCells && S.roadLevel != null) {
-          const job = czQueue.then(async () => { await czInit(); await czGroundOffsets(S, S.shots); });
-          czQueue = job.catch(() => null);
-          try { await job; } catch (e) { console.warn("SightLine: nivelul solului:", e); }
-        }
-        log(`${loc.id}: verificare cu poza`);
-        if (czCells && Object.values(S.shots).some(x => x && x.pixels)) { photoCheck(S); photoChecked = true; }
-      } catch (e) { console.warn("SightLine: Street View:", e); }
+      try { S.shots = await withTimeout(fetchShots(S), 20000, "Street View"); } catch (e) { console.warn("SightLine:", e); S.shots = S.shots || {}; }
+      log(`${loc.id}: poze ${Object.values(S.shots || {}).filter(x => x && x.img).length}`);
     }
-    if (photoChecked) source = "osm+cesium+foto";
-    store[loc.id] = {
-      key, source, occluded_pct: Math.round(S.vis.occluded_pct * 10) / 10, mount,
-      by_distance: Object.fromEntries(DISTANCES.map(d => [d, Math.round(S.vis.byDistance[d].pct)])),
-      cesium_cells: czCells || null, road_level: S.roadLevel != null ? S.roadLevel : (prev && prev.key === key ? prev.road_level : null), cesium_error: czError, street_reach_m: Math.round(reach(S)),
-      road_name: S.roadName, buildings: S.buildings.length, osm_trees: S.trees.length,
-    };
-    try { sessionStorage.setItem("sightline-visibility", JSON.stringify(store)); } catch (e) {}
+    // rafinarea făcută deja în tabul ăsta (aceeași poziție, același panou): o refolosim
+    const prev = store[loc.id];
+    if (prev && prev.key === S.key && prev.cesium_cells) {
+      S.roadLevel = prev.road_level; applyCz(S, prev.cesium_cells); S.refined = true;
+    }
+    saveStore(loc, S);
     return S;
   }
 
-  // Promisiune pe care o așteaptă results.html înainte de POST /score: { id_pin: { occluded_pct, ... } }.
-  // Dacă nu se termină în 3 minute, scorul pleacă fără ea (și scoring/ folosește valoarea lui implicită).
-  const readyJobs = {};
+  function refine(S, loc, onStatus) {   // o singură rafinare pe scenă, oricine o cere
+    if (onStatus) S.onRefineStep = onStatus;
+    if (!S.refineP) S.refineP = refineNow(S, loc);
+    return S.refineP;
+  }
+  async function refineNow(S, loc) {
+    const onStatus = d => S.onRefineStep && S.onRefineStep(d);
+    if (S.refined || !cesiumToken()) return S;
+    let czCells = null, czError = null;
+    const run1 = () => czQueue.then(() => czRefine(S, onStatus));
+    let job = run1(); czQueue = job.catch(() => null);
+    try { czCells = await job; }
+    catch (e) {
+      if (/prea lent/.test(e.message)) { czError = "prea lent, sărit"; log(`${loc.id}: 3D prea lent, sărit`); }
+      else {
+        console.warn("SightLine: modelul 3D a eșuat, reîncerc:", e);
+        job = run1(); czQueue = job.catch(() => null);
+        try { czCells = await job; } catch (e2) { czError = e2.message || String(e2); console.warn("SightLine: Cesium:", e2); }
+      }
+    }
+    if (czCells) {
+      if (S.shots && S.roadLevel != null) {
+        const g = czQueue.then(async () => { await czInit(); await czGroundOffsets(S, S.shots); });
+        czQueue = g.catch(() => null);
+        try { await g; } catch (e) { console.warn("SightLine: nivelul solului:", e); }
+      }
+      applyCz(S, czCells);
+      log(`${loc.id}: rafinat cu modelul 3D`);
+    }
+    S.refined = true;
+    saveStore(loc, S, czError);
+    window.dispatchEvent(new CustomEvent("sightline:refined", { detail: { id: loc.id } }));
+    return S;
+  }
+
+  async function computeFor(loc, mount, onStatus) {
+    const S = await computeFast(loc, mount);
+    return refine(S, loc, onStatus);
+  }
+
+  // Promisiunea pe care o așteaptă results.html înainte de POST /score: { id_pin: { occluded_pct, ... } }.
+  // Se rezolvă după etapa rapidă (cel mult 40 s); după rafinarea tuturor pinilor, clasamentul se recalculează.
+  const fastJobs = {}, refineJobs = {};
   const ready = (campaign && campaign.locations && campaign.locations.length)
-    ? Promise.race([
-        Promise.all(campaign.locations.map(l => (readyJobs[l.id] = computeFor(l, "unipol").catch(() => null)))),
-        new Promise(r => setTimeout(r, 180000)),
-      ]).then(() => store)
+    ? (() => {
+        const fast = Promise.all(campaign.locations.map(l => (fastJobs[l.id] = computeFast(l, "unipol").catch(e => { log(`${l.id}: ${e.message}`); return null; }))));
+        fast.then(async scenes => {
+          const before = JSON.stringify(campaign.locations.map(l => store[l.id] && store[l.id].occluded_pct));
+          await Promise.all(campaign.locations.map((l, i) => (refineJobs[l.id] = scenes[i] ? refine(scenes[i], l).catch(() => scenes[i]) : Promise.resolve(null))));
+          const after = JSON.stringify(campaign.locations.map(l => store[l.id] && store[l.id].occluded_pct));
+          if (after !== before && typeof window.loadScore === "function") window.loadScore(campaign);
+        });
+        return Promise.race([fast, new Promise(r => setTimeout(r, 40000))]).then(() => store);
+      })()
     : Promise.resolve(store);
 
   // ---------------------------------------------------------------- Interfața din caseta „Randare 3D”
@@ -894,14 +991,17 @@
     const key = (window.SIGHTLINE_CONFIG && window.SIGHTLINE_CONFIG.googleMapsApiKey) || "";
     let S = null, shots = {}, dist = 150, live = null, run = 0, showMask = false;
 
-    function showVis() {
+    function showVis(pending) {
       const v = S && S.vis; if (!v) { $(".slv-vis").innerHTML = ""; return; }
+      if (!pending && S && !S.refined && cesiumToken()) pending = "se rafinează cu modelul 3D…";
       if (!hasPoint(S, dist)) { $(".slv-vis").innerHTML = `fără punct la ${dist} m · ${v.visible_pct.toFixed(0)}% în medie`; return; }
       const at = v.byDistance[dist];
       const st = store[S.locId] || {};
-      const src = st.source === "osm+cesium+foto" ? "clădiri + copaci (3D Google, verificat cu poza)"
+      const nb = st.no_buildings ? " · fără clădiri OSM (n-au venit la timp)" : "";
+      const src0 = st.source === "osm+cesium+foto" ? "clădiri + copaci (3D Google, verificat cu poza)"
         : st.source === "osm+cesium" ? "clădiri + copaci (3D Google)" : `doar clădiri OSM${st.cesium_error ? " (3D: " + st.cesium_error + ")" : ""}`;
-      $(".slv-vis").innerHTML = `vizibil ${at.pct.toFixed(0)}% la ${dist} m · ${v.visible_pct.toFixed(0)}% în medie · ${src}
+      const src = src0 + nb;
+      $(".slv-vis").innerHTML = `vizibil ${at.pct.toFixed(0)}% la ${dist} m · ${v.visible_pct.toFixed(0)}% în medie · ${pending || src}
         <span class="slv-grid">${at.cells.map(c => `<i style="background:${c === true || c >= 1 ? "#4caf50" : c > 0 ? "#ffb300" : "#e53935"}"></i>`).join("")}</span>`;
     }
 
@@ -929,12 +1029,18 @@
       try {
         msg("Caut strada, clădirile și copacii în OpenStreetMap…");
         const before = store[loc.id] && store[loc.id].occluded_pct;
-        if (mount === "unipol" && readyJobs[loc.id]) { msg("Calculez vizibilitatea în modelul 3D Google (cam un minut)…"); S = await readyJobs[loc.id]; }
-        if (!S || S.mount !== mount) S = await computeFor(loc, mount, t => { if (my === run) msg(t); });
+        if (mount === "unipol" && fastJobs[loc.id]) S = await fastJobs[loc.id];
+        if (!S || S.mount !== mount) S = await computeFast(loc, mount);
         if (my !== run) return;
         if (!S) throw new Error("nu am putut calcula scena");
-        // tipul panoului schimbă vizibilitatea → recalculăm clasamentul din pagina lui P4
-        if (before !== undefined && before !== store[loc.id].occluded_pct && typeof window.loadScore === "function") window.loadScore(campaign);
+        // a doua etapă (modelul 3D) în fundal: când e gata, redesenăm și, dacă s-a schimbat, recalculăm clasamentul
+        const refP = (mount === "unipol" && refineJobs[loc.id]) ? refineJobs[loc.id] : refine(S, loc, d => { if (my === run) showVis(`modelul 3D Google: ${d} m…`); });
+        Promise.resolve(refP).then(() => {
+          if (my !== run) return;
+          showVis(); setCaption(); paint();
+          if (mount !== "unipol" && store[loc.id] && store[loc.id].occluded_pct !== before && typeof window.loadScore === "function") window.loadScore(campaign);
+        });
+        if (mount !== "unipol" && before !== undefined && before !== store[loc.id].occluded_pct && typeof window.loadScore === "function") window.loadScore(campaign);
         window.dispatchEvent(new CustomEvent("sightline:visibility", { detail: { id: loc.id, ...store[loc.id] } }));
         showVis();
         if (!cesiumToken()) $(".slv-vis").title = "Fără token Cesium: vizibilitatea ține cont doar de clădiri și de copacii din OpenStreetMap.";
@@ -943,10 +1049,16 @@
         shots = S.shots;
         if (svg) svg.style.display = "none";
         if (overlayLabel) overlayLabel.textContent = "Street View + panou SightLine";
-        const sub = scene.parentElement && scene.parentElement.querySelector(".caption-sub");
-        if (sub) sub.textContent = `${S.moved > 0.5 ? `Panoul mutat cu ${S.moved.toFixed(0)} m față de pin (pinul era în / lângă o clădire) · ` : ""}Poze reale Street View · ${S.roadName} · vizibilitate: ${store[loc.id] && /^osm\+cesium/.test(store[loc.id].source) ? "clădiri OSM + model 3D Google" + (store[loc.id].source.endsWith("foto") ? ", verificat cu poza" : "") : "clădiri OSM"}`;
+        setCaption();
         paint();
       } catch (e) { msg("Nu am putut pregăti vederea: " + e.message); }
+    }
+
+    function setCaption() {
+      if (!S) return;
+      const loc = { id: S.locId };
+      const sub = scene.parentElement && scene.parentElement.querySelector(".caption-sub");
+      if (sub) sub.textContent = `${S.moved > 0.5 ? `Panoul mutat cu ${S.moved.toFixed(0)} m față de pin (pinul era în / lângă o clădire) · ` : ""}Poze reale Street View · ${S.roadName} · vizibilitate: ${store[loc.id] && /^osm\+cesium/.test(store[loc.id].source) ? "clădiri OSM + model 3D Google" + (store[loc.id].source.endsWith("foto") ? ", verificat cu poza" : "") : "clădiri OSM"}`;
     }
 
     // ---- live: panorama Google, panoul desenat deasupra
@@ -985,6 +1097,6 @@
     load();
   }
 
-  window.SightLineView = { buildScene, visibility, viewpoint, DISTANCES, ready, log: LOG };
+  window.SightLineView = { buildScene, visibility, viewpoint, DISTANCES, ready, log: LOG, _cz: () => cz };
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init); else init();
 })();
