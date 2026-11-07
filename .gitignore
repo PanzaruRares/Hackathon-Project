@@ -26,6 +26,7 @@ unity/**/.idea/
 
 # Cadre generate (mari); cache-ul API ramane in repo pentru demo offline
 data/frames/
+data/videos/
 
 # OS
 .DS_Store
