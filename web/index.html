@@ -306,6 +306,50 @@
         background: #d6f58a;
       }
 
+      .topbar {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        margin-bottom: 58px;
+      }
+
+      .topbar .brand {
+        margin-bottom: 0;
+      }
+
+      .brief-link {
+        display: inline-flex;
+        min-height: 40px;
+        align-items: center;
+        gap: 10px;
+        padding: 0 16px;
+        border: 1px solid #e4e6df;
+        border-radius: 999px;
+        background: #fff;
+        color: #20231f;
+        font-size: 13px;
+        font-weight: 650;
+        text-decoration: none;
+        transition: border-color 120ms ease, transform 120ms ease;
+      }
+
+      .brief-link:hover {
+        transform: translateY(-1px);
+        border-color: #899a6c;
+      }
+
+      .brief-link:focus-visible {
+        outline: 3px solid rgb(131 155 80 / 35%);
+        outline-offset: 3px;
+      }
+
+      .brief-link span {
+        color: #526638;
+        font-size: 15px;
+      }
+
       .intro {
         margin-bottom: 34px;
       }
@@ -486,8 +530,13 @@
           padding: 24px 16px 40px;
         }
 
-        .brand {
+        .brand,
+        .topbar {
           margin-bottom: 42px;
+        }
+
+        .topbar .brand {
+          margin-bottom: 0;
         }
 
         .section {
@@ -530,9 +579,14 @@
   </head>
   <body>
     <main>
-      <div class="brand" aria-label="SightLine">
-        <span class="brand-mark" aria-hidden="true">↗</span>
-        <span>SightLine</span>
+      <div class="topbar">
+        <div class="brand" aria-label="SightLine">
+          <span class="brand-mark" aria-hidden="true">↗</span>
+          <span>SightLine</span>
+        </div>
+        <a class="brief-link" href="campaign_brief_generator/campaign_brief.html">
+          Campaign Brief Generator <span aria-hidden="true">→</span>
+        </a>
       </div>
 
       <header class="intro">

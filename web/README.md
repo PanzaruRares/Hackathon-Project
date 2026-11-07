@@ -7,6 +7,10 @@ Dashboard-ul este împărțit în două secțiuni:
 - **Analiza panou:** imaginea reclamei (analiza textului și a lizibilității imaginii va fi separată);
 - **Analiza poziție:** selectarea pinurilor pe o hartă Leaflet cu date OpenStreetMap, preț lunar în EUR pentru fiecare poziție și dimensiunea editabilă a panoului (lățime și înălțime în metri, implicit 12 × 4 m).
 
+## Campaign Brief Generator
+
+Butonul „Campaign Brief Generator” din dashboard deschide `campaign_brief_generator/campaign_brief.html`. Pagina generează un brief de campanie outdoor (strategie, trei concepte creative, recomandări și checklist) cu AI-ul gratuit Pollinations.ai și are o rezervă locală, din șabloane, când serviciul nu răspunde.
+
 ## Harta și selectarea pozițiilor
 
 Harta folosește biblioteca Leaflet și dalele publice OpenStreetMap. Nu necesită cheie API, cont sau configurare locală. Este necesară o conexiune la internet pentru a încărca biblioteca și harta.
