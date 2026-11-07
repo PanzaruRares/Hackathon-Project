@@ -2,20 +2,18 @@
 
 ## Dashboard inițial
 
-Deschide `index.html` în browser. Dashboard-ul este împărțit în două secțiuni:
+Dashboard-ul este împărțit în două secțiuni:
 
 - **Analiza panou:** imaginea reclamei (analiza textului și a lizibilității imaginii va fi separată);
-- **Analiza poziție:** selectarea pinurilor pe Google Maps, preț lunar în EUR pentru fiecare poziție și dimensiunea editabilă a panoului (lățime și înălțime în metri, implicit 12 × 4 m).
+- **Analiza poziție:** selectarea pinurilor pe o hartă Leaflet cu date OpenStreetMap, preț lunar în EUR pentru fiecare poziție și dimensiunea editabilă a panoului (lățime și înălțime în metri, implicit 12 × 4 m).
 
-## Configurarea Google Maps
+## Harta și selectarea pozițiilor
 
-Selectarea pinurilor necesită o cheie pentru Google Maps JavaScript API. Creează o cheie cu restricții pentru site-ul tău, activează API-ul și configureaz-o local:
+Harta folosește biblioteca Leaflet și dalele publice OpenStreetMap. Nu necesită cheie API, cont sau configurare locală. Este necesară o conexiune la internet pentru a încărca biblioteca și harta.
 
-1. Copiază `config.example.js` în `config.local.js`.
-2. Completează `googleMapsApiKey` în `config.local.js`.
-3. Deschide site-ul printr-un server local din folderul `web/` (de exemplu `py -m http.server 8000`), apoi accesează `http://localhost:8000`.
+Pornește un server din folderul `web/` (de exemplu `py -m http.server 8000`) și accesează `http://localhost:8000`. Harta afișează traseul Căii Dorobanților din datele OpenStreetMap și restricționează adăugarea pinurilor la maximum 12 metri de geometria străzii. Coordonatele reale ale clickului validat sunt păstrate. Pentru fiecare poziție poți introduce prețul lunar sau o poți șterge din listă.
 
-`config.local.js` este ignorat de Git. Restricționează cheia Google Maps la origin-ul site-ului tău. Fără cheie, formularul rămâne disponibil, iar hartă afișează instrucțiunea de configurare. Pozițiile păstrează coordonatele selectate și prețurile, fără să ceară adrese.
+Dalele hărții sunt furnizate de OpenStreetMap și afișează atribuirea cerută către contributorii OSM. Serverele publice de tile-uri au politici de utilizare și nu oferă garanție de disponibilitate; pentru trafic mare sau utilizare de producție trebuie ales un furnizor de tile-uri potrivit.
 
 ## Rezultate demonstrative
 
