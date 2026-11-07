@@ -569,7 +569,7 @@
           </div>
           <div class="position-fields">
             <div class="map-shell">
-              <div id="map" role="application" aria-label="Hartă OpenStreetMap pentru selectarea pozițiilor de pe Calea Dorobanților, București"></div>
+              <div id="map" role="application" aria-label="Hartă OpenStreetMap pentru selectarea pozițiilor"></div>
               <p class="map-status" id="map-status" role="status" aria-live="polite">
                 Se încarcă harta…
               </p>
@@ -607,34 +607,6 @@
       const submitStatus = document.querySelector("#submit-status");
       const positions = [];
       let map;
-      let selectionBounds;
-      const dorobantiRoadSegments = [
-        [[44.4648096, 26.0886323], [44.4643839, 26.0894985], [44.4640873, 26.0901043], [44.4640536, 26.0901753], [44.4639892, 26.0902975], [44.4637185, 26.0908026], [44.4635004, 26.0911606], [44.4632213, 26.0915769], [44.4629057, 26.0919752], [44.4625103, 26.0924073], [44.4624147, 26.0925094], [44.4622751, 26.0926276], [44.4617703, 26.093008], [44.4606794, 26.0937975], [44.4606195, 26.0938411], [44.460581, 26.0938692], [44.4604305, 26.0939945]],
-        [[44.4529352, 26.0986331], [44.4527685, 26.0986659], [44.4522831, 26.0987549], [44.4522016, 26.0987703], [44.4516081, 26.0988793], [44.4515385, 26.0988921], [44.4511837, 26.0989552], [44.4509162, 26.099002], [44.450461, 26.099087], [44.4503807, 26.0991037]],
-        [[44.4503807, 26.0991037], [44.4497355, 26.0992287], [44.4496428, 26.0992462], [44.4495723, 26.0992595], [44.449286, 26.0993142], [44.4490023, 26.0993575], [44.4488563, 26.0993718], [44.4487359, 26.0993754], [44.4481338, 26.0993576], [44.4479838, 26.0993583], [44.4477654, 26.0993628], [44.4475866, 26.099368], [44.4473531, 26.0993736], [44.447066, 26.0993988], [44.4469503, 26.0994105]],
-        [[44.4649364, 26.0887442], [44.4650774, 26.0884596], [44.4651393, 26.0883359], [44.4651928, 26.0882249], [44.4653526, 26.0878814], [44.4656039, 26.0874035], [44.4656448, 26.0873248]],
-        [[44.4641547, 26.0903135], [44.464194, 26.0902354], [44.4648409, 26.0889369]],
-        [[44.4655168, 26.0871907], [44.4654763, 26.0872753], [44.465338, 26.0875508], [44.4652428, 26.0877433], [44.4650722, 26.0880998], [44.465015, 26.0882155], [44.4649537, 26.0883415]],
-        [[44.4576238, 26.0959947], [44.4577268, 26.0959289], [44.4580798, 26.0957032], [44.4585552, 26.0953964]],
-        [[44.4606552, 26.0941089], [44.4606775, 26.0940933], [44.4610006, 26.0938595], [44.4614994, 26.0934934]],
-        [[44.453107, 26.0985852], [44.453176, 26.0985558], [44.4533046, 26.0984897], [44.4537603, 26.0982592], [44.4539189, 26.098179], [44.4539956, 26.0981402]],
-        [[44.456105, 26.0969804], [44.456876, 26.0964804]],
-        [[44.4585552, 26.0953964], [44.4591321, 26.0950167], [44.4592702, 26.0949258]],
-        [[44.4618429, 26.0932299], [44.4623985, 26.0927737]],
-        [[44.4570799, 26.0963489], [44.4573247, 26.096191], [44.4576238, 26.0959947]],
-        [[44.4656448, 26.0873248], [44.4657023, 26.0872222], [44.4657343, 26.0871683], [44.465773, 26.0871272], [44.4658205, 26.0870807], [44.4659034, 26.0870146], [44.4659717, 26.0869762], [44.4660715, 26.0869303]],
-        [[44.4544634, 26.0979004], [44.4550249, 26.0976197]],
-        [[44.4636317, 26.091254], [44.4639164, 26.0907459]],
-        [[44.4598717, 26.0945326], [44.4603029, 26.0942335], [44.4603097, 26.0942288]],
-        [[44.4592702, 26.0949258], [44.4596208, 26.0946974]],
-        [[44.4465887, 26.0994958], [44.4460853, 26.0996277]],
-        [[44.4614994, 26.0934934], [44.4617703, 26.093008]],
-        [[44.4649537, 26.0883415], [44.4648096, 26.0886323]],
-        [[44.463325, 26.0917084], [44.4634927, 26.0914599]],
-        [[44.4468514, 26.0994269], [44.4467702, 26.0994474], [44.4465887, 26.0994958]],
-        [[44.460529, 26.0941972], [44.4606552, 26.0941089]],
-        [[44.4469503, 26.0994105], [44.4468514, 26.0994269]],
-      ];
 
       function createMapMarker(position, index) {
         return L.marker([position.lat, position.lon], {
@@ -645,73 +617,24 @@
           .bindTooltip(`Pin ${index + 1}`);
       }
 
-      function distanceToRoadMeters(point) {
-        const earthRadiusMeters = 6371000;
-        const pointLatitude = point.lat * Math.PI / 180;
-        const pointLongitude = point.lng * Math.PI / 180;
-        let minimumDistance = Infinity;
-
-        dorobantiRoadSegments.forEach((segment) => {
-          for (let index = 1; index < segment.length; index += 1) {
-            const start = segment[index - 1];
-            const end = segment[index];
-            const startX = (start[1] * Math.PI / 180 - pointLongitude) *
-              Math.cos(pointLatitude) * earthRadiusMeters;
-            const startY = (start[0] * Math.PI / 180 - pointLatitude) * earthRadiusMeters;
-            const endX = (end[1] * Math.PI / 180 - pointLongitude) *
-              Math.cos(pointLatitude) * earthRadiusMeters;
-            const endY = (end[0] * Math.PI / 180 - pointLatitude) * earthRadiusMeters;
-            const segmentX = endX - startX;
-            const segmentY = endY - startY;
-            const lengthSquared = segmentX * segmentX + segmentY * segmentY;
-            const projection = lengthSquared === 0
-              ? 0
-              : Math.max(0, Math.min(1, -(startX * segmentX + startY * segmentY) / lengthSquared));
-            const distance = Math.hypot(
-              startX + projection * segmentX,
-              startY + projection * segmentY
-            );
-            minimumDistance = Math.min(minimumDistance, distance);
-          }
-        });
-
-        return minimumDistance;
-      }
-
       function initializeMap() {
-        const roadPoints = dorobantiRoadSegments.flat();
-        const roadBounds = L.latLngBounds(roadPoints);
-        selectionBounds = roadBounds.pad(0.08);
         map = L.map(mapElement, {
-          maxBounds: selectionBounds,
-          maxBoundsViscosity: 1,
-          minZoom: 14,
+          minZoom: 3,
           maxZoom: 20,
           zoomControl: true,
         });
+        map.setView([44.452, 26.094], 13);
         L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
           maxZoom: 19,
           attribution:
             '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener noreferrer">OpenStreetMap</a> contributors',
         }).addTo(map);
 
-        dorobantiRoadSegments.forEach((segment) => L.polyline(segment, {
-          color: "#536a3b",
-          weight: 8,
-          opacity: 0.75,
-          interactive: false,
-        }).addTo(map));
-
         map.on("click", (event) => {
-          if (distanceToRoadMeters(event.latlng) > 12) {
-            mapStatus.textContent = "Pinurile pot fi plasate doar pe traseul Căii Dorobanților.";
-            return;
-          }
           addPosition(event.latlng.lat, event.latlng.lng);
-          mapStatus.textContent = "Pin adăugat pe Calea Dorobanților.";
+          mapStatus.textContent = "Pin adăugat. Poți selecta o poziție pe orice stradă.";
         });
-        map.fitBounds(roadBounds, { padding: [24, 24] });
-        mapStatus.textContent = "Apasă pe traseul evidențiat al Căii Dorobanților pentru a adăuga un pin.";
+        mapStatus.textContent = "Apasă oriunde pe hartă pentru a adăuga un pin.";
       }
 
       function createCreativePreview(file) {

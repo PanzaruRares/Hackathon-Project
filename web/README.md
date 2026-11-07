@@ -11,7 +11,7 @@ Dashboard-ul este împărțit în două secțiuni:
 
 Harta folosește biblioteca Leaflet și dalele publice OpenStreetMap. Nu necesită cheie API, cont sau configurare locală. Este necesară o conexiune la internet pentru a încărca biblioteca și harta.
 
-Pornește un server din folderul `web/` (de exemplu `py -m http.server 8000`) și accesează `http://localhost:8000`. Harta afișează traseul Căii Dorobanților din datele OpenStreetMap și restricționează adăugarea pinurilor la maximum 12 metri de geometria străzii. Coordonatele reale ale clickului validat sunt păstrate. Pentru fiecare poziție poți introduce prețul lunar sau o poți șterge din listă.
+Pornește un server din folderul `web/` (de exemplu `py -m http.server 8000`) și accesează `http://localhost:8000`. Harta pornește centrată pe București, dar poate fi deplasată și mărită oriunde; poți adăuga pinuri pe orice stradă. Coordonatele reale alese pe hartă sunt păstrate. Pentru fiecare poziție poți introduce prețul lunar sau o poți șterge din listă.
 
 Dalele hărții sunt furnizate de OpenStreetMap și afișează atribuirea cerută către contributorii OSM. Serverele publice de tile-uri au politici de utilizare și nu oferă garanție de disponibilitate; pentru trafic mare sau utilizare de producție trebuie ales un furnizor de tile-uri potrivit.
 
