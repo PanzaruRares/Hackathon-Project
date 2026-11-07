@@ -1,0 +1,21 @@
+{
+  "location_id": "A",
+  "center": { "lat": 44.4600, "lon": 26.0800 },
+  "radius_m": 300,
+  "billboard": {
+    "lat": 44.4605,
+    "lon": 26.0811,
+    "elevation_m": 6,
+    "width_m": 12,
+    "height_m": 4,
+    "facing_deg": 210
+  },
+  "approaches": [
+    { "road_osm_id": 123456, "direction": "N-S", "speed_kmh": 42, "start_distance_m": 200 }
+  ],
+  "osm_file": "data/cache/osm_A.json",
+  "creative_png": "data/creative.png",
+  "creative_text": "Pizza fierbinte livrată în 20 de minute oriunde în sector",
+  "frames_out_dir": "data/frames/A",
+  "fps": 10
+}

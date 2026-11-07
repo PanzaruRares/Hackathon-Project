@@ -1,0 +1,18 @@
+{
+  "location_id": "A",
+  "source": "unity",
+  "approaches": [
+    {
+      "direction": "N-S",
+      "visible_seconds": 2.1,
+      "occluded_pct": 35,
+      "first_visible_distance_m": 140,
+      "min_letter_px": 9,
+      "max_letter_px": 31,
+      "frames_dir": "data/frames/A/N-S",
+      "frames": [
+        { "file": "0001.png", "t_s": 0.0, "distance_m": 140, "visible_pct": 60, "letter_px": 9 }
+      ]
+    }
+  ]
+}

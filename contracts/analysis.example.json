@@ -1,0 +1,18 @@
+{
+  "location_id": "A",
+  "source": "streetview",
+  "visible_seconds": 2.1,
+  "occluded_pct": 35,
+  "attention_share": 0.18,
+  "readable_words": 4,
+  "total_words": 9,
+  "competing_ads": 3,
+  "competitor_brands": ["Exemplu Pizza"],
+  "competitors_1km": 2,
+  "distance_to_store_m": 450,
+  "daily_cars_est": 30000,
+  "daily_cars_source": "estimare dupa tipul drumului",
+  "monthly_price_eur": 3000,
+  "real_impressions_month": 0,
+  "cost_per_real_impression_eur": 0
+}

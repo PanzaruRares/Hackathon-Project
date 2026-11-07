@@ -1,0 +1,32 @@
+# Secrete
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+
+# Unity
+unity/**/[Ll]ibrary/
+unity/**/[Tt]emp/
+unity/**/[Oo]bj/
+unity/**/[Bb]uild/
+unity/**/[Bb]uilds/
+unity/**/[Ll]ogs/
+unity/**/[Uu]ser[Ss]ettings/
+unity/**/*.csproj
+unity/**/*.sln
+unity/**/.vs/
+unity/**/.idea/
+
+# Cadre generate (mari); cache-ul API ramane in repo pentru demo offline
+data/frames/
+
+# OS
+.DS_Store
+Thumbs.db
