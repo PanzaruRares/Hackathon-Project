@@ -150,10 +150,10 @@
           const pts = r ? w.pts.slice().reverse() : w.pts;
           const next = pts.length > 1 ? norm(sub(pts[pts.length - 2], s)) : goingBack;
           const turn = deg(Math.acos(Math.max(-1, Math.min(1, dot2(next, goingBack)))));
-          const score = turn + ((w.tags.name || "") === curName ? 0 : 1000);
+          const score = turn + ((w.tags.name || "") === curName ? 0 : 100);
           if (score < bestScore) { bestScore = score; found = wi; rev = r; }
         });
-        if (found < 0 || bestScore >= 1000 + 60) break;           // altă stradă și viraj mare: ne oprim
+        if (found < 0 || bestScore >= 100 + 35) break;            // altă stradă și viraj mare: ne oprim
         used.delete(found); used.add(found);
         cur = ways[found].pts.slice(); if (rev) cur.reverse(); idx = cur.length - 2;
       }
@@ -178,9 +178,15 @@
     });
 
     // poziția și orientarea panoului
-    const roadHalf = lanes * 3.5 / 2;
+    // jumătatea carosabilului: din tag-ul width, altfel benzi + loc de parcare pe margine
+    const wTag = parseFloat(road.tags.width);
+    const parking = /^(primary|secondary|tertiary|trunk)/.test(road.tags.highway) ? 2.5 : 1.5;
+    const roadHalf = Number.isFinite(wTag) && wTag > 3 ? wTag / 2 : lanes * 3.5 / 2 + parking;
     let c = { x: 0, y: 0 };                             // panoul stă exact pe pin…
-    if (best.d < roadHalf + 1) c = add(best.q, mul(right, roadHalf + 2)); // …doar dacă pinul e pe carosabil, îl mut pe trotuar
+    if (best.d < roadHalf + 1.5) {                      // …doar dacă pinul e pe carosabil, îl mut pe trotuar, pe partea pinului
+      const side = best.d > 0.5 ? norm(mul(best.q, -1)) : right;
+      c = add(best.q, mul(side, roadHalf + 2.5));
+    }
     let n = mul(dir, -1);                               // fața spre mașinile care vin
     let mountedOn = null;
     if (mount === "wall") {
@@ -206,6 +212,10 @@
       roadName: road.tags.name || road.tags.highway, lanes, oneway: road.oneway,
     };
   }
+
+  // cât de departe de panou începe traseul (dacă strada e scurtă, nu există punct la 150 m)
+  function reach(S) { return len(sub(S.drive[0], S.c)); }
+  function hasPoint(S, d) { return reach(S) >= d - 10; }
 
   function viewpoint(S, d) {
     for (let i = 0; i < S.drive.length - 1; i++) {
@@ -262,10 +272,10 @@
   function visibility(S) {
     const byDistance = {};
     DISTANCES.forEach(d => { byDistance[d] = visibilityAt(S, viewpoint(S, d)); });
-    // media pe tot traseul (din 10 în 10 m, între 200 și 20 m de panou)
+    // media pe tot traseul (din 10 în 10 m, între 200 și 20 m de panou), doar unde există stradă
     let sum = 0, n = 0;
-    for (let d = 200; d >= 20; d -= 10) { sum += visibilityAt(S, viewpoint(S, d)).pct; n++; }
-    const visible = sum / n;
+    for (let d = 200; d >= 20; d -= 10) { if (!hasPoint(S, d) && n) continue; sum += visibilityAt(S, viewpoint(S, d)).pct; n++; }
+    const visible = sum / (n || 1);
     return { byDistance, visible_pct: visible, occluded_pct: 100 - visible };
   }
 
@@ -316,18 +326,82 @@
     return { x: cam.W / 2 + f * dot(v, rgt) / z, y: cam.H / 2 - f * dot(v, up) / z, z };
   }
 
+  // ---------------------------------------------------------------- Ce acoperă panoul, desenat în poză
+  // Pentru fiecare pătrățel din grila de vizibilitate (8 × 4):
+  //  - acoperit de clădire (0): punem înapoi pixelii din poză (clădirea rămâne în fața panoului);
+  //  - acoperit parțial de copac (0 < v < 1): punem înapoi doar pixelii de frunziș din poză (verde, natural);
+  //  - opțional (butonul „Zone acoperite”): culoare peste pătrățelele acoperite.
+  function cellQuad(S, cam, ix, iy) {
+    const top = S.E + S.H / 2, x0 = -S.W / 2 + S.W * ix / 8, x1 = x0 + S.W / 8, z0 = top - S.H * iy / 4, z1 = z0 - S.H / 4;
+    const P = (x, z) => { const q = add(S.c, mul(S.r, x)), v = sub(q, cam.pos); return project([v.x, v.y, z + (cam.dz || 0) - CAM_H], cam); };
+    const pts = [P(x0, z0), P(x1, z0), P(x1, z1), P(x0, z1)];
+    return pts.some(p => !p) ? null : pts;
+  }
+  function inQuad(x, y, q) {
+    let sign = 0;
+    for (let i = 0; i < 4; i++) {
+      const a = q[i], b = q[(i + 1) % 4], cr = (b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x);
+      if (cr !== 0) { if (sign && Math.sign(cr) !== sign) return false; sign = Math.sign(cr); }
+    }
+    return true;
+  }
+  const isFoliage = (r, g, b) => (g > r + 6 && g > b + 4) || (g > 40 && g < 110 && r < g + 4 && b < g - 2 && r + g + b < 260);
+
+  function drawOcclusion(g, S, cam, cells, original, showMask) {
+    if (!cells || !original) return;
+    let out;
+    try { out = g.getImageData(0, 0, cam.W, cam.H); } catch (e) { return; }   // poza fără CORS: nu putem citi pixelii
+    const o = original.data, d = out.data;
+    const masks = [];
+    cells.forEach((v, i) => {
+      const val = v === true ? 1 : v === false ? 0 : Number(v);
+      if (val >= 1) return;
+      const q = cellQuad(S, cam, i % 8, Math.floor(i / 8)); if (!q) return;
+      masks.push({ q, val });
+      const xs = q.map(p => p.x), ys = q.map(p => p.y);
+      const xa = Math.max(0, Math.floor(Math.min(...xs))), xb = Math.min(cam.W - 1, Math.ceil(Math.max(...xs)));
+      const ya = Math.max(0, Math.floor(Math.min(...ys))), yb = Math.min(cam.H - 1, Math.ceil(Math.max(...ys)));
+      for (let y = ya; y <= yb; y++) for (let x = xa; x <= xb; x++) {
+        if (!inQuad(x + 0.5, y + 0.5, q)) continue;
+        const k = (y * cam.W + x) * 4;
+        if (val <= 0) { d[k] = o[k]; d[k + 1] = o[k + 1]; d[k + 2] = o[k + 2]; }
+        else if (isFoliage(o[k], o[k + 1], o[k + 2])) {          // frunziș: se vede panoul printre frunze, cât spune procentul
+          const a = 1 - val;
+          d[k] = d[k] * val + o[k] * a; d[k + 1] = d[k + 1] * val + o[k + 1] * a; d[k + 2] = d[k + 2] * val + o[k + 2] * a;
+        }
+      }
+    });
+    g.putImageData(out, 0, 0);
+    if (showMask) masks.forEach(({ q, val }) => {
+      g.fillStyle = val <= 0 ? "rgb(229 57 53 / 45%)" : "rgb(255 179 0 / 40%)";
+      g.beginPath(); q.forEach((p, i) => i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y)); g.closePath(); g.fill();
+    });
+  }
+
   function drawBoard(g, S, cam, img) {
     const { W, H, E } = S, bottom = E - H / 2, top = E + H / 2;
     // x = de-a lungul panoului, z = înălțime de la sol, b = în spatele feței
     const P = (x, z, b) => {
       const q = add(add(S.c, mul(S.r, x)), mul(S.n, -b)), v = sub(q, cam.pos);
-      return project([v.x, v.y, z - CAM_H], cam);
+      return project([v.x, v.y, z + (cam.dz || 0) - CAM_H], cam);
     };
     const f = (cam.W / 2) / Math.tan(rad(cam.fov) / 2);
     const quad = (pts, color) => {
       if (pts.some(p => !p)) return;
       g.fillStyle = color; g.beginPath(); pts.forEach((p, i) => i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y)); g.closePath(); g.fill();
     };
+    const foot = (x, r) => {   // umbră de contact + placa de beton: stâlpul „stă” pe sol
+      const a = P(x, 0, 0.5); if (!a) return;
+      const w = f * r * 4.5 / a.z, h = Math.max(2, w * 0.22);
+      const gr = g.createRadialGradient(a.x, a.y, 0, a.x, a.y, w);
+      gr.addColorStop(0, "rgb(0 0 0 / 45%)"); gr.addColorStop(1, "rgb(0 0 0 / 0%)");
+      g.save(); g.translate(a.x, a.y); g.scale(1, h / w); g.translate(-a.x, -a.y);
+      g.fillStyle = gr; g.beginPath(); g.arc(a.x, a.y, w, 0, Math.PI * 2); g.fill(); g.restore();
+      const pl = [P(x - r * 2.2, 0.15, 0.5 - r * 2.2), P(x + r * 2.2, 0.15, 0.5 - r * 2.2), P(x + r * 2.2, 0, 0.5 - r * 2.2), P(x - r * 2.2, 0, 0.5 - r * 2.2)];
+      if (pl.every(Boolean)) { g.fillStyle = "#7b7d80"; g.beginPath(); pl.forEach((p, i) => i ? g.lineTo(p.x, p.y) : g.moveTo(p.x, p.y)); g.closePath(); g.fill(); }
+    };
+    if (S.mount === "unipol") foot(0, 0.45);
+    if (S.mount === "two") { foot(-W / 3, 0.25); foot(W / 3, 0.25); }
     const pole = (x, r) => {
       const a = P(x, 0, 0.5), b = P(x, bottom - 0.2, 0.5); if (!a || !b) return;
       const wa = f * r / a.z, wb = f * r / b.z;
@@ -388,7 +462,8 @@
   // tile-urile nu se salvează, se păstrează doar procentele.
   const CESIUM_JS = "https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js";
   const RAY_SKIP_M = 4;      // primii metri din fața șoferului (mașini parcate, borduri) nu contează
-  const RAY_END_M = 1.5;     // ultimul metru și jumătate = peretele / structura panoului
+  const RAY_END_M = 6;       // ultimii 6 m dinaintea panoului: copacul în care e „înfipt” panoul în model nu contează
+                             // (panoul ar sta în fața crengilor, iar coroana din model îl înghite cu totul)
   // În fotogrammetria Google, coroanele copacilor sunt „blocuri” pline până la sol (pe Dorobanți fac un tunel peste drum).
   // În realitate șoferul vede pe sub coroane, printre trunchiuri. De aceea ignorăm lovirile sub 3,5 m de la nivelul drumului
   // și continuăm raza; ce e mai sus (coroana reală, clădiri) blochează. Clădirile joase le prinde oricum OpenStreetMap.
@@ -422,7 +497,12 @@
   }
 
   async function czWait(maxMs) {
-    const frame = () => new Promise(r => requestAnimationFrame(r));
+    // cadru următor; dacă tab-ul e în fundal (requestAnimationFrame oprit), forțăm randarea ca să nu stea pe loc
+    const frame = () => new Promise(r => {
+      let done = false; const fin = () => { if (!done) { done = true; r(); } };
+      requestAnimationFrame(fin);
+      setTimeout(() => { if (!done) { try { cz.viewer.render(); } catch (e) {} fin(); } }, 60);
+    });
     const t0 = Date.now(); let ok = 0;
     await new Promise(r => setTimeout(r, 800));
     while (Date.now() - t0 < maxMs) { ok = cz.tiles.tilesLoaded ? ok + 1 : 0; if (ok >= 8) break; await frame(); }
@@ -451,13 +531,47 @@
     return hs.length >= 3 ? hs[Math.floor(hs.length * 0.2)] : null;
   }
 
+  // înălțimea solului (elipsoid) într-un punct: cea mai joasă suprafață dintr-un mic cerc (ca să nu luăm coroana unui copac)
+  function czGroundAt(lat, lon, radiusM) {
+    const C3 = Cesium.Cartesian3, hs = [];
+    const k = 111320 * Math.cos(rad(lat));
+    for (let i = 0; i < 9; i++) {
+      const a = i * Math.PI / 4, r = i === 8 ? 0 : radiusM;
+      const la = lat + r * Math.sin(a) / 111320, lo = lon + r * Math.cos(a) / k;
+      const top = C3.fromDegrees(lo, la, 1500), bot = C3.fromDegrees(lo, la, -200);
+      const hit = cz.viewer.scene.pickFromRay(new Cesium.Ray(top, C3.normalize(C3.subtract(bot, top, new C3()), new C3())));
+      if (hit && hit.position) hs.push(Cesium.Cartographic.fromCartesian(hit.position).height);
+    }
+    return hs.length ? Math.min(...hs) : null;
+  }
+
+  // diferența de nivel dintre baza panoului și solul de sub fiecare panoramă Street View (pantă, trotuar)
+  async function czGroundOffsets(S, shots) {
+    if (!cz || S.roadLevel == null) return;
+    const b = S.G(S.c);
+    cz.viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(b.lon, b.lat - 0.0018, 300),
+      orientation: { heading: 0, pitch: rad(-55), roll: 0 } });
+    await czWait(8000);
+    let hb = czGroundAt(b.lat, b.lon, 3);
+    if (hb == null || Math.abs(hb - S.roadLevel) > 2) hb = S.roadLevel + 0.15;          // trotuar
+    Object.values(shots).forEach(sh => {
+      if (!sh || sh.error) return;
+      const p = S.G(sh.pos);
+      let hp = czGroundAt(p.lat, p.lon, 1.5);
+      if (hp == null || Math.abs(hp - S.roadLevel) > 4) hp = S.roadLevel;
+      sh.dz = Math.max(-3, Math.min(3, hb - hp));
+    });
+  }
+
   async function czRefine(S, onStep) {
     await czInit();
     const road = await czRoadLevel(S);
     if (road === null) throw new Error("modelul 3D nu are date pe traseu");
+    S.roadLevel = road;
     const C3 = Cesium.Cartesian3, scene = cz.viewer.scene;
     const out = {};
     for (const d of DISTANCES) {
+      if (!hasPoint(S, d) && d !== DISTANCES[DISTANCES.length - 1]) continue;
       if (onStep) onStep(d);
       const vp = viewpoint(S, d), g = S.G(vp), to = sub(S.c, vp);
       cz.viewer.camera.setView({ destination: C3.fromDegrees(g.lon, g.lat, road + 3),
@@ -494,33 +608,42 @@
   // ---------------------------------------------------------------- Vizibilitate pentru un pin: OSM (clădiri) + Cesium (copaci și restul)
   async function computeFor(loc, mount, onStatus) {
     const size = (campaign && campaign.billboardSize) || {};
-    const key = `v2|${loc.lat.toFixed(6)},${loc.lon.toFixed(6)}|${mount}|${size.width || 12}x${size.height || 4}`;
+    const key = `v5|${loc.lat.toFixed(6)},${loc.lon.toFixed(6)}|${mount}|${size.width || 12}x${size.height || 4}`;
     const json = await overpass(loc.lat, loc.lon);
     const S = buildScene(json, { lat: loc.lat, lon: loc.lon }, size, mount);
     S.locId = loc.id;
     S.vis = visibility(S);
     let source = "osm";
     const prev = store[loc.id];
+    let czError = null;
     let czCells = prev && prev.key === key && prev.source === "osm+cesium" ? prev.cesium_cells : null;
     if (!czCells && cesiumToken()) {
       if (onStatus) onStatus("Caut copacii și obstacolele în modelul 3D Google…");
       const job = czQueue.then(() => czRefine(S, d => onStatus && onStatus(`Modelul 3D Google: raze de la ${d} m…`)));
       czQueue = job.catch(() => null);
-      try { czCells = await job; } catch (e) { console.warn("SightLine: vizibilitatea Cesium a eșuat:", e); }
+      try { czCells = await job; }
+      catch (e) {
+        console.warn("SightLine: vizibilitatea Cesium a eșuat, reîncerc:", e);
+        const retry = czQueue.then(() => czRefine(S, d => onStatus && onStatus(`Modelul 3D Google (a doua încercare): ${d} m…`)));
+        czQueue = retry.catch(() => null);
+        try { czCells = await retry; } catch (e2) { czError = e2.message || String(e2); console.warn("SightLine: Cesium:", e2); }
+      }
     }
+    if (czCells && S.roadLevel == null && prev && prev.key === key) S.roadLevel = prev.road_level;
     if (czCells) {
       source = "osm+cesium";
-      DISTANCES.forEach(d => {
+      const valid = DISTANCES.filter(d => czCells[d]);
+      valid.forEach(d => {
         const v = S.vis.byDistance[d], cells = v.cells.map((ok, i) => ok ? Number(czCells[d][i]) : 0);
         S.vis.byDistance[d] = { pct: 100 * cells.reduce((a, c) => a + c, 0) / cells.length, cells };
       });
-      const visible = DISTANCES.reduce((a, d) => a + S.vis.byDistance[d].pct, 0) / DISTANCES.length;
+      const visible = valid.reduce((a, d) => a + S.vis.byDistance[d].pct, 0) / (valid.length || 1);
       S.vis.visible_pct = visible; S.vis.occluded_pct = 100 - visible;
     }
     store[loc.id] = {
       key, source, occluded_pct: Math.round(S.vis.occluded_pct * 10) / 10, mount,
       by_distance: Object.fromEntries(DISTANCES.map(d => [d, Math.round(S.vis.byDistance[d].pct)])),
-      cesium_cells: czCells || null,
+      cesium_cells: czCells || null, road_level: S.roadLevel != null ? S.roadLevel : (prev && prev.key === key ? prev.road_level : null), cesium_error: czError, street_reach_m: Math.round(reach(S)),
       road_name: S.roadName, buildings: S.buildings.length, osm_trees: S.trees.length,
     };
     try { sessionStorage.setItem("sightline-visibility", JSON.stringify(store)); } catch (e) {}
@@ -562,7 +685,7 @@
     const box = document.createElement("div"); box.className = "slv";
     box.innerHTML = `<canvas class="slv-shot" width="${IMG_W}" height="${IMG_H}"></canvas><div class="slv-live"></div><canvas class="slv-over"></canvas>
       <div class="slv-msg">Pregătesc vederea șoferului…</div>
-      <div class="slv-bar"><select class="slv-pin"></select><select class="slv-mount"></select><button class="slv-livebtn" type="button">Live 360°</button>
+      <div class="slv-bar"><select class="slv-pin"></select><select class="slv-mount"></select><button class="slv-livebtn" type="button">Live 360°</button><button class="slv-maskbtn" type="button">Zone acoperite</button>
       <span class="slv-vis"></span></div>`;
     const svg = scene.querySelector("svg"), overlayLabel = scene.querySelector(".scene-overlay");
     scene.appendChild(box);
@@ -576,12 +699,14 @@
     if (campaign.creativePreview) { img.onload = () => { ad = img; paint(); }; img.src = campaign.creativePreview; }
 
     const key = (window.SIGHTLINE_CONFIG && window.SIGHTLINE_CONFIG.googleMapsApiKey) || "";
-    let S = null, shots = {}, dist = 150, live = null, run = 0;
+    let S = null, shots = {}, dist = 150, live = null, run = 0, showMask = false;
 
     function showVis() {
       const v = S && S.vis; if (!v) { $(".slv-vis").innerHTML = ""; return; }
+      if (!hasPoint(S, dist)) { $(".slv-vis").innerHTML = `fără punct la ${dist} m · ${v.visible_pct.toFixed(0)}% în medie`; return; }
       const at = v.byDistance[dist];
-      const src = store[S.locId] && store[S.locId].source === "osm+cesium" ? "clădiri + copaci (3D Google)" : "doar clădiri OSM";
+      const st = store[S.locId] || {};
+      const src = st.source === "osm+cesium" ? "clădiri + copaci (3D Google)" : `doar clădiri OSM${st.cesium_error ? " (3D: " + st.cesium_error + ")" : ""}`;
       $(".slv-vis").innerHTML = `vizibil ${at.pct.toFixed(0)}% la ${dist} m · ${v.visible_pct.toFixed(0)}% în medie · ${src}
         <span class="slv-grid">${at.cells.map(c => `<i style="background:${c === true || c >= 1 ? "#4caf50" : c > 0 ? "#ffb300" : "#e53935"}"></i>`).join("")}</span>`;
     }
@@ -594,7 +719,11 @@
       if (shot.error) { msg(shot.error); return; }
       msg("");
       g.drawImage(shot.img, 0, 0, IMG_W, IMG_H);
-      drawBoard(g, S, { pos: shot.pos, heading: shot.heading, pitch: shot.pitch, fov: FOV, W: IMG_W, H: IMG_H }, ad);
+      if (!shot.pixels) { try { shot.pixels = g.getImageData(0, 0, IMG_W, IMG_H); } catch (e) { shot.pixels = null; } }
+      const cam = { pos: shot.pos, heading: shot.heading, pitch: shot.pitch, fov: FOV, W: IMG_W, H: IMG_H, dz: shot.dz || 0 };
+      drawBoard(g, S, cam, ad);
+      const at = S.vis && S.vis.byDistance[dist];
+      if (at && hasPoint(S, dist)) drawOcclusion(g, S, cam, at.cells, shot.pixels, showMask);
       g.font = "600 11px system-ui"; g.fillStyle = "rgb(255 255 255 / 85%)";
       g.fillText(`Street View${shot.date ? " " + shot.date : ""} · panorama la ${shot.dist.toFixed(0)} m de panou · panou simulat SightLine`, 12, 20);
     }
@@ -607,7 +736,7 @@
       try {
         msg("Caut strada, clădirile și copacii în OpenStreetMap…");
         const before = store[loc.id] && store[loc.id].occluded_pct;
-        if (mount === "unipol" && readyJobs[loc.id]) S = await readyJobs[loc.id];
+        if (mount === "unipol" && readyJobs[loc.id]) { msg("Calculez vizibilitatea în modelul 3D Google (cam un minut)…"); S = await readyJobs[loc.id]; }
         if (!S || S.mount !== mount) S = await computeFor(loc, mount, t => { if (my === run) msg(t); });
         if (my !== run) return;
         if (!S) throw new Error("nu am putut calcula scena");
@@ -620,15 +749,26 @@
         msg("Încarc pozele Street View…");
         await loadGoogle(key);
         for (const d of DISTANCES) {
+          if (!hasPoint(S, d)) {
+            shots[d] = { error: `Strada are doar ~${Math.round(reach(S))} m în fața panoului (până la intersecția anterioară), deci nu există un punct la ${d} m.` };
+            if (d === dist) paint();
+            continue;
+          }
           try {
             const p = await findPano(S, d); if (my !== run) return;
             const im = new Image();
+            im.crossOrigin = "anonymous";   // ca să putem citi pixelii (frunzișul care acoperă panoul)
             im.src = `https://maps.googleapis.com/maps/api/streetview?size=${IMG_W}x${IMG_H}&pano=${p.pano}&heading=${p.heading.toFixed(1)}&pitch=${p.pitch.toFixed(1)}&fov=${FOV}&return_error_code=true&key=${encodeURIComponent(key)}`;
             await im.decode();
             shots[d] = { ...p, img: im };
           } catch (e) { shots[d] = { error: `Nu există Street View lângă punctul de ${d} m.` }; }
           if (my !== run) return;
           if (d === dist) paint();
+        }
+        if (cesiumToken() && S.roadLevel != null) {
+          const job = czQueue.then(async () => { await czInit(); await czGroundOffsets(S, shots); });
+          czQueue = job.catch(() => null);
+          job.then(() => { if (my === run) paint(); }).catch(e => console.warn("SightLine: nivelul solului:", e));
         }
         if (svg) svg.style.display = "none";
         if (overlayLabel) overlayLabel.textContent = "Street View + panou SightLine";
@@ -657,7 +797,7 @@
       cv.width = W * dpr; cv.height = H * dpr;
       const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
       const p = live.getPosition(), pov = live.getPov(); if (!p) return;
-      drawBoard(g, S, { pos: S.L({ lat: p.lat(), lon: p.lng() }), heading: pov.heading, pitch: pov.pitch,
+      drawBoard(g, S, { pos: S.L({ lat: p.lat(), lon: p.lng() }), heading: pov.heading, pitch: pov.pitch, dz: (shots[dist] && shots[dist].dz) || 0,
         fov: 180 / Math.pow(2, live.getZoom() || 1), W, H }, ad);
     }
 
@@ -670,6 +810,7 @@
     $(".slv-pin").onchange = load;
     $(".slv-mount").onchange = load;
     $(".slv-livebtn").onclick = openLive;
+    $(".slv-maskbtn").onclick = () => { showMask = !showMask; $(".slv-maskbtn").textContent = showMask ? "Ascunde zonele" : "Zone acoperite"; paint(); };
     load();
   }
 
