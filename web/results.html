@@ -617,6 +617,20 @@
         background: linear-gradient(90deg, #a9bf83, #657d47);
       }
 
+      .score-explanation {
+        margin: 0;
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.5;
+      }
+
+      .detected-text {
+        margin: 12px 0 0;
+        color: #444940;
+        font-size: 10px;
+        line-height: 1.6;
+      }
+
       .analysis-method {
         margin: 16px 0 0;
         padding-top: 13px;
@@ -1003,42 +1017,15 @@
             <h3 class="subsection-heading" id="creative-score-heading">Evaluare vizuală</h3>
             <div class="score-overview">
               <div>
-                <span>Nota medie a creativului</span>
-                <p>Media aritmetică a celor 7 criterii</p>
+                <span id="creative-average-label">Scorul creativului</span>
+                <p id="creative-average-method">Se analizează reclama…</p>
               </div>
               <strong class="score-total"><span id="creative-average">—</span><small> / 100</small></strong>
             </div>
-            <div class="score-list" id="creative-scores">
-              <div class="score-row">
-                <div class="score-caption"><span>Lizibilitate text</span><strong data-score-value="readability">—</strong></div>
-                <progress class="score-bar" data-score="readability" max="100" value="0" aria-label="Lizibilitate text"></progress>
-              </div>
-              <div class="score-row">
-                <div class="score-caption"><span>Contrast text–fundal</span><strong data-score-value="contrast">—</strong></div>
-                <progress class="score-bar" data-score="contrast" max="100" value="0" aria-label="Contrast text-fundal"></progress>
-              </div>
-              <div class="score-row">
-                <div class="score-caption"><span>Cantitate de text</span><strong data-score-value="textAmount">—</strong></div>
-                <progress class="score-bar" data-score="textAmount" max="100" value="0" aria-label="Cantitate de text"></progress>
-              </div>
-              <div class="score-row">
-                <div class="score-caption"><span>Aglomerare vizuală</span><strong data-score-value="visualClutter">—</strong></div>
-                <progress class="score-bar" data-score="visualClutter" max="100" value="0" aria-label="Aglomerare vizuală"></progress>
-              </div>
-              <div class="score-row">
-                <div class="score-caption"><span>Ierarhie tipografică</span><strong data-score-value="typographicHierarchy">—</strong></div>
-                <progress class="score-bar" data-score="typographicHierarchy" max="100" value="0" aria-label="Ierarhie tipografică"></progress>
-              </div>
-              <div class="score-row">
-                <div class="score-caption"><span>Separarea elementelor</span><strong data-score-value="elementSeparation">—</strong></div>
-                <progress class="score-bar" data-score="elementSeparation" max="100" value="0" aria-label="Separarea elementelor"></progress>
-              </div>
-              <div class="score-row">
-                <div class="score-caption"><span>Calitate tehnică</span><strong data-score-value="technicalQuality">—</strong></div>
-                <progress class="score-bar" data-score="technicalQuality" max="100" value="0" aria-label="Calitate tehnică"></progress>
-              </div>
+            <div class="score-list" id="creative-scores" aria-live="polite">
+              <p class="score-explanation">Analiza OCR locală durează ~10–30 de secunde.</p>
             </div>
-            <p class="analysis-method">Scorurile sunt estimări euristice din pixeli, margini, culori și rezoluție, nu OCR. Textul și caracterele nu sunt detectate direct; lizibilitatea, contrastul text–fundal, cantitatea de text și ierarhia tipografică sunt aproximări și trebuie confirmate de analiza dedicată.</p>
+            <p class="analysis-method" id="creative-method">Scorurile vin din analiza locală a serverului SightLine: textul e detectat cu OCR (EasyOCR), iar contrastul, aglomerarea, ierarhia și separarea se măsoară cu OpenCV, fără API-uri externe. Criteriile care nu pot fi evaluate apar ca N/A și nu intră în medie.</p>
           </div>
           <div class="creative-metrics" aria-label="Indicatori cromatici orientativi">
             <div class="creative-metric">
@@ -1056,7 +1043,7 @@
         </div>
       </section>
 
-      <p class="footnote">Statisticile de trafic și randarea sunt demonstrative. Nota creativului este o medie a estimărilor vizuale locale, nu o analiză OCR și nu confirmă lizibilitatea reală a textului.</p>
+      <p class="footnote">Randarea este demonstrativă. Scorul creativului este media ponderată a 6 criterii măsurate local (OCR + OpenCV); pragurile sunt orientative.</p>
     </main>
 
     <script>
@@ -1224,12 +1211,14 @@
         image.src = campaignData.creativePreview;
         image.alt = `Imaginea reclamei ${campaignData.creativeFileName}`;
         preview.replaceChildren(image);
-        recommendation.textContent = "Se analizează paleta cromatică…";
+        recommendation.textContent = "Se analizează reclama (OCR local, ~10–30 de secunde)…";
 
+        // paleta și indicatorii cromatici se calculează în browser (descriptivi, nu intră în scor)
+        let heuristic = null;
         try {
           const dimensions = campaignData.creativeDimensions || { width: 640, height: 640 };
-          const analysis = await analyzeCreative(campaignData.creativePreview, dimensions);
-          analysis.colors.forEach((color) => {
+          heuristic = await analyzeCreative(campaignData.creativePreview, dimensions);
+          heuristic.colors.forEach((color) => {
             const swatch = document.createElement("div");
             swatch.className = "swatch";
             const sample = document.createElement("span");
@@ -1241,24 +1230,111 @@
             swatch.append(sample, value);
             palette.append(swatch);
           });
-
-          document.querySelector("#creative-saturation").textContent = `${analysis.saturation}%`;
-          document.querySelector("#creative-contrast").textContent = `${analysis.tonalVariation}%`;
-          document.querySelector("#creative-average").textContent = String(analysis.averageScore);
-          Object.entries(analysis.scores).forEach(([criterion, score]) => {
-            const bar = document.querySelector(`[data-score="${criterion}"]`);
-            const value = document.querySelector(`[data-score-value="${criterion}"]`);
-            bar.value = score;
-            bar.setAttribute("aria-valuetext", `${score} din 100`);
-            value.textContent = String(score);
-          });
-          recommendation.textContent =
-            `Saturație medie ${analysis.saturation}% și variație tonală ${analysis.tonalVariation}%. Nota finală ${analysis.averageScore}/100 este media egală a celor 7 scoruri euristice.`;
+          document.querySelector("#creative-saturation").textContent = `${heuristic.saturation}%`;
+          document.querySelector("#creative-contrast").textContent = `${heuristic.tonalVariation}%`;
         } catch (error) {
           preview.replaceChildren(previewMessage);
-          recommendation.textContent =
-            `Nu am putut extrage paleta cromatică: ${error.message || "format de imagine neacceptat."}`;
         }
+
+        // scorul real: analiza locală din server (POST /analiza-reclama)
+        try {
+          const result = await requestCreativeScore(campaignData);
+          renderCreativeScore(result);
+        } catch (error) {
+          if (heuristic) {
+            renderHeuristicScores(heuristic, error);
+          } else {
+            recommendation.textContent = `Nu am putut analiza reclama: ${error.message}`;
+          }
+        }
+      }
+
+      async function requestCreativeScore(campaignData) {
+        const response = await fetch("/analiza-reclama", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: campaignData.creativeAnalysisImage || campaignData.creativePreview }),
+        });
+        let result;
+        try {
+          result = await response.json();
+        } catch {
+          throw new Error("serverul nu are analiza reclamei — pornește-l cu „python scoring/analiza_panou/server_site.py”");
+        }
+        if (!response.ok) throw new Error(result.error || `eroare ${response.status}`);
+        return result;
+      }
+
+      function scoreRow(label, score, explanation) {
+        const row = document.createElement("div");
+        row.className = "score-row";
+        const caption = document.createElement("div");
+        caption.className = "score-caption";
+        const name = document.createElement("span");
+        name.textContent = label;
+        const value = document.createElement("strong");
+        value.textContent = score == null ? "N/A" : String(score);
+        caption.append(name, value);
+        const bar = document.createElement("progress");
+        bar.className = "score-bar";
+        bar.max = 100;
+        bar.value = score ?? 0;
+        bar.setAttribute("aria-label", label);
+        bar.setAttribute("aria-valuetext", score == null ? "neevaluat" : `${score} din 100`);
+        row.append(caption, bar);
+        if (explanation) {
+          const note = document.createElement("p");
+          note.className = "score-explanation";
+          note.textContent = explanation;
+          row.append(note);
+        }
+        return row;
+      }
+
+      function renderCreativeScore(result) {
+        const evaluated = result.criteria.filter((criterion) => criterion.scor != null);
+        const total = result.score ?? result.score_provisional;
+        document.querySelector("#creative-average").textContent = total == null ? "—" : String(total);
+        document.querySelector("#creative-average-label").textContent =
+          result.score == null ? "Scor provizoriu al creativului" : `Scorul creativului · ${result.rating}`;
+        document.querySelector("#creative-average-method").textContent =
+          `Media ponderată a ${evaluated.length} din ${result.criteria.length} criterii (acoperire ${result.coverage_pct}%)`;
+
+        const list = document.querySelector("#creative-scores");
+        list.replaceChildren(...result.criteria.map((criterion) => {
+          const label = `${criterion.nume} · ${criterion.pondere}%${criterion.status === "incert" ? " · incert" : ""}`;
+          return scoreRow(label, criterion.scor, criterion.parere);
+        }));
+        const texts = result.texts.filter((text) => text.tip !== "watermark").map((text) => `„${text.text}”`);
+        if (texts.length > 0) {
+          const detected = document.createElement("p");
+          detected.className = "detected-text";
+          detected.textContent = `Text detectat: ${texts.join(", ")}`;
+          list.append(detected);
+        }
+
+        const recommendations = result.recommendations.slice(0, 3);
+        document.querySelector("#creative-recommendation").textContent = recommendations.length > 0
+          ? `Recomandări: ${recommendations.join(" ")}`
+          : "Nicio problemă majoră măsurată; nu sunt recomandări.";
+      }
+
+      function renderHeuristicScores(analysis, error) {
+        const labels = {
+          readability: "Lizibilitate text", contrast: "Contrast text–fundal", textAmount: "Cantitate de text",
+          visualClutter: "Aglomerare vizuală", typographicHierarchy: "Ierarhie tipografică",
+          elementSeparation: "Separarea elementelor", technicalQuality: "Calitate tehnică",
+        };
+        document.querySelector("#creative-average").textContent = String(analysis.averageScore);
+        document.querySelector("#creative-average-label").textContent = "Estimare euristică (fără OCR)";
+        document.querySelector("#creative-average-method").textContent = "Media celor 7 estimări din pixeli, calculată în browser";
+        document.querySelector("#creative-scores").replaceChildren(
+          ...Object.entries(analysis.scores).map(([key, score]) => scoreRow(labels[key], score)),
+        );
+        document.querySelector("#creative-method").textContent =
+          "Scorurile de mai sus sunt estimări euristice din pixeli, nu OCR: textul nu e detectat direct.";
+        document.querySelector("#creative-recommendation").textContent =
+          `Analiza OCR nu a fost disponibilă (${error.message}). Se afișează estimarea din browser.`;
       }
 
       document.querySelectorAll("[data-distance]").forEach((button) => {
@@ -1364,7 +1440,7 @@
           demoState.forEach(([element, html]) => { element.innerHTML = html; });
           document.querySelector("#data-badge").textContent = "Date demonstrative";
           verdictCopy.textContent =
-            `Nu am putut calcula clasamentul (${error.message}). Pornește serverul cu „python3 scoring/server.py” și deschide site-ul de la http://localhost:8000. Cifrele de mai jos sunt demonstrative.`;
+            `Nu am putut calcula clasamentul (${error.message}). Pornește serverul cu „python scoring/analiza_panou/server_site.py” (sau „python3 scoring/server.py”) și deschide site-ul de la http://localhost:8000. Cifrele de mai jos sunt demonstrative.`;
         }
       }
 

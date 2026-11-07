@@ -19,8 +19,29 @@ Dalele hărții sunt furnizate de OpenStreetMap și afișează atribuirea cerut�
 
 Butonul „Trimite spre analiză” deschide `results.html` și transmite local numele fișierului imaginii, dimensiunea panoului, pinurile și prețurile. Pagina de rezultate include o ilustrație statică în perspectivă, un verdict și statistici fictive, marcate ca demonstrative. Selectorul 150 m / 80 m / 30 m schimbă doar eticheta distanței.
 
-Raportul include și o evaluare vizuală locală a creativului: lizibilitate estimată, contrast text–fundal, cantitate de text, aglomerare, ierarhie tipografică, separarea elementelor și calitate tehnică. Fiecare criteriu primește un scor 0–100, iar nota finală este media aritmetică rotunjită a celor șapte scoruri. Sunt afișate și previzualizarea imaginii, paleta dominantă, saturația și variația tonală.
+## Analiza reclamei
 
-Scorurile sunt euristici calculate din pixeli, margini, culori și rezoluția imaginii — nu folosesc OCR și nu detectează efectiv textul sau caracterele. Prin urmare, cantitatea de text, lizibilitatea, contrastul text–fundal și ierarhia tipografică sunt aproximări vizuale, nu evaluări certe ale conținutului reclamei.
+Pagina de rezultate trimite imaginea la `POST /analiza-reclama` și afișează scorul calculat local de algoritmul din `scoring/analiza_panou/`: OCR (EasyOCR) și OpenCV, fără API-uri externe. Sunt 6 criterii:
 
-Datele se păstrează în `sessionStorage` pentru sesiunea curentă. Imaginea este redimensionată pentru previzualizare și analiză cromatică în browser; dimensiunea originală este păstrată pentru scorul tehnic. Nimic nu se trimite către server. Ilustrația 3D și statisticile de trafic sunt demonstrative, nu randări Unity sau rezultate calculate de backend.
+| Criteriu | Pondere |
+|---|---|
+| Lizibilitate | 25% |
+| Contrast text–fundal | 20% |
+| Cantitate de text | 15% |
+| Aglomerare | 15% |
+| Ierarhie tipografică | 15% |
+| Separarea elementelor | 10% |
+
+Fiecare criteriu are un scor 0–100 și o explicație scurtă. Scorul general e media ponderată a criteriilor evaluate; cele neevaluabile apar ca N/A. Pagina mai arată textul detectat și maximum 3 recomandări. Analiza durează ~10–30 s.
+
+Pornește site-ul cu serverul care include analiza (din rădăcina repo-ului):
+
+```
+python scoring/analiza_panou/server_site.py
+```
+
+Apoi deschide `http://localhost:8000`. Serverul servește și `POST /score`, ca `scoring/server.py`.
+
+Dacă serverul de analiză nu răspunde, pagina afișează în locul scorului o estimare euristică din browser, fără OCR, marcată ca atare. Paleta dominantă, saturația și variația tonală se calculează mereu în browser și sunt doar descriptive.
+
+Datele se păstrează în `sessionStorage` pentru sesiunea curentă. Se păstrează o previzualizare de 640 px și o copie de până la 1600 px pentru analiza OCR. Ilustrația 3D este demonstrativă, nu o randare Unity.

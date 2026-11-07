@@ -637,24 +637,31 @@
         mapStatus.textContent = "Apasă oriunde pe hartă pentru a adăuga un pin.";
       }
 
+      function renderImage(image, maxSide, quality) {
+        const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        const context = canvas.getContext("2d");
+        if (!context) throw new Error("Browserul nu poate procesa imaginea încărcată.");
+        context.fillStyle = "#ffffff"; // transparența devine alb, ca în analiza din server
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        return canvas.toDataURL("image/jpeg", quality);
+      }
+
       function createCreativePreview(file) {
         return createImageBitmap(file).then((image) => {
-          const dimensions = { width: image.width, height: image.height };
-          const scale = Math.min(1, 640 / Math.max(image.width, image.height));
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.max(1, Math.round(image.width * scale));
-          canvas.height = Math.max(1, Math.round(image.height * scale));
-          const context = canvas.getContext("2d");
-          if (!context) {
+          try {
+            return {
+              preview: renderImage(image, 640, 0.78),
+              // copie mai mare pentru analiza OCR din server (textul mic se citește mai bine)
+              analysisImage: renderImage(image, 1600, 0.92),
+              dimensions: { width: image.width, height: image.height },
+            };
+          } finally {
             image.close();
-            throw new Error("Browserul nu poate procesa imaginea încărcată.");
           }
-          context.drawImage(image, 0, 0, canvas.width, canvas.height);
-          image.close();
-          return {
-            preview: canvas.toDataURL("image/jpeg", 0.78),
-            dimensions,
-          };
         });
       }
 
@@ -676,6 +683,7 @@
           const campaign = {
             creativeFileName: creativeFile.name,
             creativePreview: creative.preview,
+            creativeAnalysisImage: creative.analysisImage,
             creativeDimensions: creative.dimensions,
             billboardSize: {
               width: Number(campaignForm.elements.namedItem("billboard_size_m[width]").value),
@@ -688,7 +696,13 @@
               monthlyPriceEur: Number(row.querySelector('[name$="[monthly_price_eur]"]').value),
             })),
           };
-          sessionStorage.setItem("sightline-campaign", JSON.stringify(campaign));
+          try {
+            sessionStorage.setItem("sightline-campaign", JSON.stringify(campaign));
+          } catch {
+            // copia mare nu încape în sessionStorage: analiza folosește previzualizarea
+            delete campaign.creativeAnalysisImage;
+            sessionStorage.setItem("sightline-campaign", JSON.stringify(campaign));
+          }
           window.location.href = "results.html";
         } catch (error) {
           submitStatus.dataset.state = "error";
