@@ -478,6 +478,68 @@
         text-align: center;
       }
 
+      .ai-actions {
+        display: grid;
+        justify-items: start;
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      .ai-update-button {
+        min-height: 38px;
+        padding: 0 15px;
+        border: 0;
+        border-radius: 999px;
+        background: #35442a;
+        color: #fff;
+        font: inherit;
+        font-size: 11px;
+        font-weight: 650;
+        cursor: pointer;
+      }
+
+      .ai-update-button:hover:not(:disabled) {
+        background: #526638;
+      }
+
+      .ai-update-button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+
+      .ai-status {
+        margin: 0;
+        color: var(--muted);
+        font-size: 10px;
+        line-height: 1.55;
+      }
+
+      .ai-suggestions {
+        width: 100%;
+        padding: 14px;
+        border: 1px solid #e6ebdd;
+        border-radius: 12px;
+        background: #f7f9f3;
+      }
+
+      .ai-suggestions[hidden] {
+        display: none;
+      }
+
+      .ai-suggestions h4 {
+        margin: 0 0 8px;
+        color: #35442a;
+        font-size: 11px;
+      }
+
+      .ai-suggestions p {
+        margin: 0;
+        color: #444940;
+        font-size: 11px;
+        line-height: 1.65;
+        white-space: pre-line;
+      }
+
       .creative-findings {
         display: grid;
         align-content: start;
@@ -1025,6 +1087,16 @@
             <div class="score-list" id="creative-scores" aria-live="polite">
               <p class="score-explanation">Analiza OCR locală durează ~10–30 de secunde.</p>
             </div>
+            <div class="ai-actions">
+              <button class="ai-update-button" id="creative-ai-suggestions" type="button" disabled>Cere sugestii AI</button>
+              <p class="ai-status" id="creative-ai-status" role="status" aria-live="polite">
+                Se activează după analiza locală a reclamei.
+              </p>
+              <div class="ai-suggestions" id="creative-ai-suggestions-result" aria-live="polite" hidden>
+                <h4>Sugestii AI</h4>
+                <p id="creative-ai-suggestions-text"></p>
+              </div>
+            </div>
             <p class="analysis-method" id="creative-method">Scorurile vin din analiza locală a serverului SightLine: textul e detectat cu OCR (EasyOCR), iar contrastul, aglomerarea, ierarhia și separarea se măsoară cu OpenCV, fără API-uri externe. Criteriile care nu pot fi evaluate apar ca N/A și nu intră în medie.</p>
           </div>
           <div class="creative-metrics" aria-label="Indicatori cromatici orientativi">
@@ -1052,6 +1124,7 @@
     <script>
       const campaign = JSON.parse(sessionStorage.getItem("sightline-campaign") || "null");
       const distanceCaption = document.querySelector("#distance-caption");
+      let latestCreativeScore = null;
 
       function analyzeCreative(imageSource, sourceDimensions) {
         return new Promise((resolve, reject) => {
@@ -1295,6 +1368,10 @@
       }
 
       function renderCreativeScore(result) {
+        latestCreativeScore = result;
+        document.querySelector("#creative-ai-suggestions").disabled = false;
+        document.querySelector("#creative-ai-status").textContent =
+          "Sugestiile AI vor folosi doar scorurile și recomandările măsurate.";
         const evaluated = result.criteria.filter((criterion) => criterion.scor != null);
         const total = result.score ?? result.score_provisional;
         document.querySelector("#creative-average").textContent = total == null ? "—" : String(total);
@@ -1323,6 +1400,10 @@
       }
 
       function renderHeuristicScores(analysis, error) {
+        latestCreativeScore = null;
+        document.querySelector("#creative-ai-suggestions").disabled = true;
+        document.querySelector("#creative-ai-status").textContent =
+          "Sugestiile AI necesită scorurile locale măsurate de server; estimarea din browser nu este suficientă.";
         const labels = {
           readability: "Lizibilitate text", contrast: "Contrast text–fundal", textAmount: "Cantitate de text",
           visualClutter: "Aglomerare vizuală", typographicHierarchy: "Ierarhie tipografică",
@@ -1339,6 +1420,54 @@
         document.querySelector("#creative-recommendation").textContent =
           `Analiza OCR nu a fost disponibilă (${error.message}). Se afișează estimarea din browser.`;
       }
+
+      async function requestCreativeSuggestions() {
+        if (!latestCreativeScore) return;
+        const button = document.querySelector("#creative-ai-suggestions");
+        const status = document.querySelector("#creative-ai-status");
+        const suggestions = document.querySelector("#creative-ai-suggestions-result");
+        button.disabled = true;
+        suggestions.hidden = true;
+        document.querySelector("#creative-ai-suggestions-text").textContent = "";
+        status.textContent = "Se trimit scorurile și recomandările către Gemini…";
+        try {
+          const criteria = latestCreativeScore.criteria.map((criterion) => ({
+            name: criterion.nume,
+            score: criterion.scor,
+            weight: criterion.pondere,
+            reason: criterion.parere,
+          }));
+          const response = await fetch("/sugestii-ai", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              overallScore: latestCreativeScore.score ?? latestCreativeScore.score_provisional,
+              criteria,
+              recommendations: latestCreativeScore.recommendations || [],
+            }),
+          });
+          let result;
+          try {
+            result = await response.json();
+          } catch {
+            throw new Error("serverul nu a returnat un răspuns valid pentru sugestiile AI.");
+          }
+          if (!response.ok) throw new Error(result.error || `eroare ${response.status}`);
+          if (typeof result.suggestions !== "string" || !result.suggestions.trim()) {
+            throw new Error("modelul nu a returnat sugestii.");
+          }
+
+          document.querySelector("#creative-ai-suggestions-text").textContent = result.suggestions.trim();
+          suggestions.hidden = false;
+          status.textContent = `Recomandări primite de la ${result.provider || "Gemini API"}.`;
+        } catch (error) {
+          status.textContent = `Nu am putut genera sugestiile: ${error.message}`;
+        } finally {
+          button.disabled = !latestCreativeScore;
+        }
+      }
+
+      document.querySelector("#creative-ai-suggestions").addEventListener("click", requestCreativeSuggestions);
 
       document.querySelectorAll("[data-distance]").forEach((button) => {
         button.addEventListener("click", () => {
