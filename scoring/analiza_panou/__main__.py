@@ -40,13 +40,14 @@ def main() -> None:
         print(json.dumps(date, ensure_ascii=False, indent=2))
         return
 
-    if rez.score is not None:
+    if rez.evaluation_status == "completa":
         print(f"\nSCOR: {rez.score}/100 — {rez.rating}   (acoperire {rez.coverage_pct}%)\n")
+    elif rez.evaluation_status == "provizorie":
+        print(f"\nSCOR PROVIZORIU: {rez.score_provisional}/100 — evaluare incompletă (acoperire {rez.coverage_pct}%)\n")
     else:
-        prov = "–" if rez.score_provisional is None else rez.score_provisional
-        print(f"\nSCOR: nedefinitiv (provizoriu {prov}) — {rez.rating}\n")
+        print(f"\nFĂRĂ SCOR FINAL — {rez.rating}\n")
     for c in rez.criteria:
-        valoare = "neaplicabil" if c.scor is None else f"{c.scor:>3}/100"
+        valoare = c.status if c.scor is None else f"{c.scor:>3}/100"
         marcaj = "  (incert)" if c.status == "incert" else ""
         print(f"  {c.nume:<26} {valoare:>11}  pondere {c.pondere}%{marcaj}")
 

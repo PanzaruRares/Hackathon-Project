@@ -1,5 +1,10 @@
-"""Cele 6 criterii ale scorului publicitar. Fiecare întoarce un Criteriu cu scor 0-100 (sau neaplicabil),
-măsurătorile care îl justifică și recomandări legate de problema măsurată."""
+"""Cele 6 criterii ale scorului publicitar. Fiecare întoarce un Criteriu cu scor 0-100 (sau fără scor),
+măsurătorile care îl justifică și recomandări legate de problema măsurată.
+
+Un criteriu fără scor e:
+- „neaplicabil”: caracteristica sigur nu există în reclamă;
+- „neevaluabil”: algoritmul nu a putut determina rezultatul (de ex. OCR-ul nu a găsit text — asta
+  nu dovedește că reclama nu are text)."""
 
 from __future__ import annotations
 
@@ -17,14 +22,14 @@ from .ocr import gol_intre
 class Criteriu:
     id: str
     nume: str
-    scor: int | None          # 0-100; None dacă e neaplicabil
+    scor: int | None          # 0-100; None dacă e neaplicabil sau neevaluabil
     pondere: int
     valoare: float | None     # măsurătoarea principală
     unitate: str
-    nivel: str                # "bun" | "acceptabil" | "slab" | "neaplicabil"
+    nivel: str                # "bun" | "acceptabil" | "slab" | "neaplicabil" | "neevaluabil"
     parere: str
     recomandare: str | None = None              # prima recomandare (compatibilitate)
-    status: str = "evaluat"                      # "evaluat" | "incert" | "neaplicabil"
+    status: str = "evaluat"                      # "evaluat" | "incert" | "neaplicabil" | "neevaluabil"
     masuratori: dict = field(default_factory=dict)
     recomandari: list[str] = field(default_factory=list)
 
@@ -72,7 +77,17 @@ def _agrega(ctx: Context, valori: list[float | None]) -> float | None:
 
 
 def _neaplicabil(id_: str, motiv: str) -> Criteriu:
+    """Caracteristica sigur nu există în reclamă."""
     return Criteriu(id_, C.NUME[id_], None, C.PONDERI[id_], None, "", "neaplicabil", motiv, status="neaplicabil")
+
+
+def _neevaluabil(id_: str, motiv: str) -> Criteriu:
+    """Algoritmul nu a putut determina rezultatul; nu înseamnă scor 0 și nici că elementul lipsește."""
+    return Criteriu(id_, C.NUME[id_], None, C.PONDERI[id_], None, "", "neevaluabil", motiv, status="neevaluabil")
+
+
+_FARA_TEXT_DETECTAT = ("OCR-ul nu a detectat text, deci criteriul nu a putut fi evaluat. Asta nu dovedește că "
+                       "reclama nu are text: textul poate fi stilizat, prea mic sau slab contrastat pentru OCR.")
 
 
 def _final(id_, scor, valoare, unitate, parere, recomandari, status, masuratori) -> Criteriu:
@@ -90,7 +105,7 @@ def _citat(text: str, n: int = 40) -> str:
 
 def lizibilitate(ctx: Context) -> Criteriu:
     if not ctx.regiuni:
-        return _neaplicabil("lizibilitate_text", "Nu s-a detectat text; criteriul nu se aplică.")
+        return _neevaluabil("lizibilitate_text", _FARA_TEXT_DETECTAT)
     dom = ctx.regiune_dominanta
     for r in ctx.regiuni:
         s_dim = _interp(r["char_rel"], C.LIZ_DIM_DOMINANT if r is dom else C.LIZ_DIM_SECUNDAR)
@@ -168,7 +183,10 @@ def _categorie_contrast(c: float) -> str:
 def contrast(ctx: Context) -> Criteriu:
     masurate = [r for r in ctx.regiuni if r["contrast"] is not None]
     if not masurate:
-        return _neaplicabil("contrast_text", "Nu s-a detectat text al cărui contrast să poată fi măsurat.")
+        if not ctx.regiuni:
+            return _neevaluabil("contrast_text", _FARA_TEXT_DETECTAT)
+        return _neevaluabil("contrast_text", "Textul a fost detectat, dar literele nu au putut fi separate fiabil de "
+                                             "fundal în nicio regiune, deci contrastul nu a putut fi măsurat.")
     scor = _agrega(ctx, [None if r["contrast"] is None else _interp(r["contrast"], C.CONTRAST_PRAGURI)
                          for r in ctx.regiuni])
     dom = ctx.regiune_dominanta
@@ -220,8 +238,7 @@ def _treapta(n: float) -> int:
 
 def cantitate(ctx: Context) -> Criteriu:
     if not ctx.regiuni:
-        return _neaplicabil("cantitate_text", "Reclamă fără text: efortul de lectură e zero, criteriul nu se aplică "
-                                              "(o reclamă pur vizuală poate fi intenționată).")
+        return _neevaluabil("cantitate_text", _FARA_TEXT_DETECTAT)
     ch_max = ctx.regiune_dominanta["char_h"]
     dominante = [r for r in ctx.regiuni if r["char_h"] >= C.PRAG_TEXT_DOMINANT * ch_max]
     cuv_total = sum(len(tokeni(r["text"])) for r in ctx.regiuni)
@@ -343,7 +360,7 @@ def aglomerare(ctx: Context) -> Criteriu:
 
 def ierarhie(ctx: Context) -> Criteriu:
     if not ctx.blocuri:
-        return _neaplicabil("ierarhie", "Nu s-a detectat text; criteriul nu se aplică.")
+        return _neevaluabil("ierarhie", _FARA_TEXT_DETECTAT)
     dom = ctx.bloc_dominant
     altele = [b for b in ctx.blocuri if b is not dom]
     fragmente_dom = sum(1 for r in dom["regiuni"] if r["char_h"] >= C.IER_PRAG_CONCURENT * dom["char_h"])
@@ -396,7 +413,7 @@ def ierarhie(ctx: Context) -> Criteriu:
 
 def separare(ctx: Context) -> Criteriu:
     if not ctx.blocuri:
-        return _neaplicabil("separare", "Nu s-a detectat text; criteriul nu se aplică.")
+        return _neevaluabil("separare", _FARA_TEXT_DETECTAT)
     bl = ctx.blocuri
     pond = [b["importanta"] for b in bl]
 

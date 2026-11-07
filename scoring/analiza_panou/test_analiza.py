@@ -16,7 +16,9 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-from .analiza import Rezultat, analizeaza
+from . import config as C
+from .analiza import Rezultat, analizeaza, scor_general
+from .criterii import Criteriu
 
 W, H = 1500, 500
 DIR = Path(tempfile.gettempdir()) / "analiza_panou_teste"
@@ -181,12 +183,15 @@ def test_05_text_peste_fotografie():
     assert crit("05_peste_fotografie", "contrast_text").scor <= crit("01_minimalist", "contrast_text").scor
 
 
-def test_06_fara_text_neaplicabil():
+def test_06_fara_text_neevaluabil():
+    """OCR-ul nu găsește text → criteriile de text sunt neevaluabile (nu neaplicabile, nu 0)."""
     r = rezultat("06_fara_text")
     for id_ in ("lizibilitate_text", "contrast_text", "cantitate_text", "ierarhie", "separare"):
-        assert crit("06_fara_text", id_).status == "neaplicabil"
+        c = crit("06_fara_text", id_)
+        assert c.status == "neevaluabil" and c.scor is None, (id_, c.status)
     assert crit("06_fara_text", "aglomerare").scor is not None
     assert r.coverage_pct == 15 and r.score is None and r.score_provisional is not None
+    assert r.evaluation_status == "insuficienta"
 
 
 def test_07_watermark_exclus():
@@ -215,6 +220,57 @@ def test_10_titluri_concurente():
     c = crit("10_titluri_concurente", "ierarhie")
     assert len(c.masuratori["blocuri_concurente"]) >= 2
     assert c.scor <= 70 and c.scor < crit("09_dominant_secundar", "ierarhie").scor
+
+
+# --- Scorul general cu criterii N/A (fără OCR, rapide) -------------------------------------------------------
+
+def _criterii(scoruri: dict[str, int | None]) -> list[Criteriu]:
+    """Cele 6 criterii; cele lipsă din `scoruri` sau cu None sunt neevaluabile."""
+    return [Criteriu(id_, C.NUME[id_], scoruri.get(id_), pondere, None, "", "", "",
+                     status="evaluat" if scoruri.get(id_) is not None else "neevaluabil")
+            for id_, pondere in C.PONDERI.items()]
+
+
+def test_na_toate_evaluate_scor_final():
+    g = scor_general(_criterii({id_: 70 for id_ in C.PONDERI}))
+    assert g["coverage_pct"] == 100 and g["evaluation_status"] == "completa" and g["score"] == 70
+
+
+def test_na_scor_mare_din_putine_criterii_nu_e_evaluare_completa():
+    # doar aglomerarea (15%) și separarea (10%), ambele 100: scor mare, dar evaluare de 25%
+    g = scor_general(_criterii({"aglomerare": 100, "separare": 100}))
+    assert g["coverage_pct"] == 25
+    assert g["score"] is None and g["evaluation_status"] == "insuficienta"
+    assert g["score_provisional"] == 100     # păstrat doar ca valoare provizorie
+
+
+def test_na_acoperire_60_79_doar_provizoriu():
+    # lizibilitatea (25%) neevaluabilă → 75%
+    g = scor_general(_criterii({id_: 90 for id_ in C.PONDERI if id_ != "lizibilitate_text"}))
+    assert g["coverage_pct"] == 75 and g["score"] is None
+    assert g["evaluation_status"] == "provizorie" and g["score_provisional"] == 90
+
+
+def test_na_praguri_80_si_60():
+    fara_contrast = scor_general(_criterii({id_: 80 for id_ in C.PONDERI if id_ != "contrast_text"}))
+    assert fara_contrast["coverage_pct"] == 80 and fara_contrast["evaluation_status"] == "completa"
+    assert fara_contrast["score"] == 80
+    sase_zeci = scor_general(_criterii({id_: 80 for id_ in C.PONDERI if id_ not in ("lizibilitate_text", "aglomerare")}))
+    assert sase_zeci["coverage_pct"] == 60 and sase_zeci["evaluation_status"] == "provizorie"
+    sub = scor_general(_criterii({id_: 80 for id_ in ("contrast_text", "cantitate_text", "ierarhie")}))
+    assert sub["coverage_pct"] == 50 and sub["evaluation_status"] == "insuficienta" and sub["score"] is None
+
+
+def test_na_nu_inseamna_zero():
+    # un criteriu neevaluabil nu trage în jos scorul celorlalte (nu e tratat ca 0)
+    g = scor_general(_criterii({id_: 60 for id_ in C.PONDERI if id_ != "separare"}))
+    assert g["score_provisional"] == 60 and g["coverage_pct"] == 90
+
+
+def test_na_niciun_criteriu_evaluat():
+    g = scor_general(_criterii({}))
+    assert g["coverage_pct"] == 0 and g["score"] is None and g["score_provisional"] is None
+    assert g["evaluation_status"] == "insuficienta"
 
 
 def test_reproductibil():

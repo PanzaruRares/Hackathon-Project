@@ -1373,12 +1373,29 @@
         document.querySelector("#creative-ai-status").textContent =
           "Sugestiile AI vor folosi doar scorurile și recomandările măsurate.";
         const evaluated = result.criteria.filter((criterion) => criterion.scor != null);
-        const total = result.score ?? result.score_provisional;
+        const coverage = `${evaluated.length} din ${result.criteria.length} criterii (acoperire ${result.coverage_pct}%)`;
+        // ≥ 80%: scor final · 60–79%: doar provizoriu · < 60%: fără scor (nu se afișează o cifră)
+        const status = result.evaluation_status || (result.score != null ? "completa" : "insuficienta");
+        let total = null;
+        let label;
+        let method;
+        if (status === "completa") {
+          total = result.score;
+          label = `Scorul creativului · ${result.rating}`;
+          method = `Media ponderată a ${coverage}`;
+        } else if (status === "provizorie") {
+          total = result.score_provisional;
+          label = "Scor provizoriu · evaluare incompletă";
+          method = `Au putut fi evaluate doar ${coverage}; scorul nu e final.`;
+        } else {
+          label = "Fără scor · imagine nereprezentativă pentru o reclamă";
+          method = "Imaginea încărcată nu pare reprezentativă pentru o reclamă outdoor: nu are text lizibil sau " +
+            `textul nu a putut fi citit, așa că s-au putut evalua doar ${coverage}. ` +
+            "Încarcă grafica reclamei, cu mesajul și textul vizibile.";
+        }
         document.querySelector("#creative-average").textContent = total == null ? "—" : String(total);
-        document.querySelector("#creative-average-label").textContent =
-          result.score == null ? "Scor provizoriu al creativului" : `Scorul creativului · ${result.rating}`;
-        document.querySelector("#creative-average-method").textContent =
-          `Media ponderată a ${evaluated.length} din ${result.criteria.length} criterii (acoperire ${result.coverage_pct}%)`;
+        document.querySelector("#creative-average-label").textContent = label;
+        document.querySelector("#creative-average-method").textContent = method;
 
         const list = document.querySelector("#creative-scores");
         list.replaceChildren(...result.criteria.map((criterion) => {

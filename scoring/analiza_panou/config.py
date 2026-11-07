@@ -24,7 +24,11 @@ NUME = {
     "separare": "Separarea elementelor",
 }
 
-# sub acest procent din ponderi evaluate, scorul general nu e afișat ca definitiv
+# acoperire = suma ponderilor criteriilor evaluate
+#   ≥ 80%: scor final valid, afișat împreună cu acoperirea
+#   60–79%: doar scor provizoriu, cu avertisment
+#   < 60%: fără scor final
+ACOPERIRE_VALIDA_PCT = 80
 ACOPERIRE_MINIMA_PCT = 60
 
 # --- OCR ------------------------------------------------------------------------------

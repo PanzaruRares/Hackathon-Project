@@ -10,8 +10,10 @@ OpenCV și NumPy. Scorul se calculează determinist în Python, din 6 criterii:
     5. Ierarhia tipografică       15%   bloc dominant vs. mediana celorlalte, niveluri de mărime, concurență
     6. Separarea elementelor      10%   distanțe între blocuri, coliziuni, margini (în înălțimi de caracter)
 
-Criteriile neaplicabile (de ex. fără text) se exclud și ponderile se renormalizează. Calitatea tehnică
-a fișierului se raportează separat și nu intră în scor. Nu se presupun dimensiuni fizice sau distanțe de citire.
+Criteriile fără scor (neaplicabile sau neevaluabile) nu primesc 0. Acoperirea = suma ponderilor criteriilor
+evaluate: de la 80% scorul e final, între 60 și 79% e doar provizoriu, iar sub 60% nu există scor final.
+Calitatea tehnică a fișierului se raportează separat și nu intră în scor. Nu se presupun dimensiuni fizice
+sau distanțe de citire.
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ __all__ = ["analizeaza", "Rezultat", "Criteriu", "PONDERI", "incarca_imagine"]
 
 @dataclass
 class Rezultat:
-    score: int | None                 # scorul general; None dacă acoperirea e prea mică
+    score: int | None                 # scorul final; None dacă acoperirea e sub 80%
     rating: str
     criteria: list[Criteriu]
     opinions: list[str]
@@ -47,6 +49,7 @@ class Rezultat:
     coverage_pct: int = 100           # cât din ponderi a putut fi evaluat
     score_provisional: int | None = None   # scorul calculat pe criteriile disponibile, chiar dacă acoperirea e mică
     technical: dict = field(default_factory=dict)
+    evaluation_status: str = "completa"    # "completa" (≥ 80%) | "provizorie" (60–79%) | "insuficienta" (< 60%)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -65,6 +68,28 @@ def incarca_imagine(cale: str | Path) -> Image.Image:
 
 def _eticheta(scor: int) -> str:
     return next(nume for prag, nume in C.ETICHETE if scor >= prag)
+
+
+def scor_general(criterii: list[Criteriu]) -> dict:
+    """Scorul general, acoperirea și statusul evaluării.
+
+    Criteriile fără scor (neaplicabile sau neevaluabile) nu primesc 0; scorul se calculează din cele evaluate
+    (ponderi renormalizate), dar e prezentat ca final doar dacă acoperirea e de cel puțin 80%.
+    """
+    evaluate = [c for c in criterii if c.scor is not None]
+    acoperire = sum(c.pondere for c in evaluate)
+    provizoriu = round(sum(c.scor * c.pondere for c in evaluate) / acoperire) if evaluate else None
+    if provizoriu is not None and acoperire >= C.ACOPERIRE_VALIDA_PCT:
+        status, scor, eticheta = "completa", provizoriu, _eticheta(provizoriu)
+    elif provizoriu is not None and acoperire >= C.ACOPERIRE_MINIMA_PCT:
+        status, scor = "provizorie", None
+        eticheta = f"Scor provizoriu: au putut fi evaluate criterii care însumează doar {acoperire}% din ponderi"
+    else:
+        status, scor = "insuficienta", None
+        eticheta = (f"Fără scor final: au putut fi evaluate criterii care însumează doar {acoperire}% din ponderi "
+                    f"(minimum {C.ACOPERIRE_MINIMA_PCT}%)")
+    return {"score": scor, "score_provisional": provizoriu, "coverage_pct": acoperire,
+            "evaluation_status": status, "rating": eticheta}
 
 
 def _alege_dominant(blocuri: list[dict], W: int, H: int) -> dict | None:
@@ -119,19 +144,21 @@ def analizeaza(cale_imagine: str | Path, latime_panou_m: float | None = None, in
     # --- Criteriile și scorul general ----------------------------------------------------------------------
     criterii = [lizibilitate(ctx), contrast(ctx), cantitate(ctx), aglomerare(ctx), ierarhie(ctx), separare(ctx)]
     evaluate = [c for c in criterii if c.scor is not None]
-    acoperire = sum(c.pondere for c in evaluate)
-    provizoriu = round(sum(c.scor * c.pondere for c in evaluate) / acoperire) if evaluate else None
-    definitiv = acoperire >= C.ACOPERIRE_MINIMA_PCT and provizoriu is not None
-    scor = provizoriu if definitiv else None
-    rating = _eticheta(scor) if definitiv else f"Evaluare incompletă: doar {acoperire}% din criterii au putut fi evaluate"
+    general = scor_general(criterii)
+    acoperire, provizoriu = general["coverage_pct"], general["score_provisional"]
 
     # --- Avertismente ---------------------------------------------------------------------------------------
     avertismente = []
     if not regiuni:
-        avertismente.append("Nu s-a detectat text publicitar. Criteriile de text sunt neaplicabile; o reclamă pur "
-                            "vizuală poate fi intenționată, dar scorul general nu e definitiv.")
-    if not definitiv and evaluate:
-        avertismente.append(f"Acoperire {acoperire}% (sub {C.ACOPERIRE_MINIMA_PCT}%): scorul {provizoriu} e doar provizoriu.")
+        avertismente.append("OCR-ul nu a detectat text. Asta nu dovedește că reclama nu are text, deci criteriile "
+                            "de text sunt neevaluabile (nu primesc 0).")
+    neevaluabile = [c.nume for c in criterii if c.status == "neevaluabil"]
+    if general["evaluation_status"] == "provizorie":
+        avertismente.append(f"Evaluare incompletă: acoperire {acoperire}% (sub {C.ACOPERIRE_VALIDA_PCT}%). Scorul "
+                            f"{provizoriu} e doar provizoriu. Neevaluate: {', '.join(neevaluabile)}.")
+    elif general["evaluation_status"] == "insuficienta":
+        avertismente.append(f"Evaluare insuficientă: acoperire {acoperire}% (sub {C.ACOPERIRE_MINIMA_PCT}%), deci nu "
+                            f"există un scor final valid. Neevaluate: {', '.join(neevaluabile) or '–'}.")
     for c in criterii:
         if c.status == "incert":
             motive = c.masuratori.get("motive_incertitudine")
@@ -183,7 +210,9 @@ def analizeaza(cale_imagine: str | Path, latime_panou_m: float | None = None, in
         "regiuni_text": len(regiuni), "regiuni_watermark": len(watermarks), "randuri": len(randuri),
         "blocuri": len(blocuri), "bloc_dominant": bloc_dom["text"] if bloc_dom else None,
         "ponderi": C.PONDERI, "criterii_neaplicabile": [c.id for c in criterii if c.status == "neaplicabil"],
+        "criterii_neevaluabile": [c.id for c in criterii if c.status == "neevaluabil"],
     }
-    return Rezultat(score=scor, rating=rating, criteria=criterii, opinions=pareri, recommendations=recomandari,
-                    warnings=avertismente, texts=texte, metrics=metrici, coverage_pct=acoperire,
-                    score_provisional=provizoriu, technical=tehnic)
+    return Rezultat(score=general["score"], rating=general["rating"], criteria=criterii, opinions=pareri,
+                    recommendations=recomandari, warnings=avertismente, texts=texte, metrics=metrici,
+                    coverage_pct=acoperire, score_provisional=provizoriu, technical=tehnic,
+                    evaluation_status=general["evaluation_status"])
