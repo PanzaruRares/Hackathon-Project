@@ -40,11 +40,11 @@
     return job;
   }
   async function overpassNow(lat, lon) {
-    const key = `sl_osm_${lat.toFixed(5)}_${lon.toFixed(5)}`;
+    const key = `sl_osm2_${lat.toFixed(5)}_${lon.toFixed(5)}`;
     if (osmMem[key]) return osmMem[key];
     try { const c = localStorage.getItem(key); if (c) return (osmMem[key] = JSON.parse(c)); } catch (e) {}
     const q = `[out:json][timeout:40];(
-      way(around:${APPROACH_M + 40},${lat},${lon})["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link)$"];
+      way(around:${APPROACH_M + 40},${lat},${lon})["highway"~"^(motorway|trunk|primary|secondary|tertiary|unclassified|residential|motorway_link|trunk_link|primary_link|secondary_link|tertiary_link|living_street|service|road)$"];
       way(around:${APPROACH_M + 20},${lat},${lon})["building"];
       node(around:${APPROACH_M + 20},${lat},${lon})["natural"="tree"];
       way(around:${APPROACH_M + 20},${lat},${lon})["natural"="tree_row"];
@@ -92,7 +92,9 @@
     const G = v => ({ lat: pin.lat + v.y / ky, lon: pin.lon + v.x / kx });
     const els = json.elements || [];
 
-    const roadsRaw = els.filter(e => e.type === "way" && e.tags && e.tags.highway && e.geometry && e.geometry.length > 1);
+    // drumurile de serviciu contează doar ca legătură (nu parcări, alei de casă)
+    const roadsRaw = els.filter(e => e.type === "way" && e.tags && e.tags.highway && e.geometry && e.geometry.length > 1
+      && !(e.tags.highway === "service" && /^(parking_aisle|driveway|drive-through|emergency_access)$/.test(e.tags.service || "")));
     if (!roadsRaw.length) throw new Error("nicio stradă lângă pin");
     const buildings = els.filter(e => e.type === "way" && e.tags && e.tags.building && e.geometry && e.geometry.length > 2)
       .map(e => ({ poly: e.geometry.map(L), h: buildingHeight(e.tags) }));
@@ -122,7 +124,12 @@
         const b = w.pts[i + 1], ab = sub(b, a), l2 = dot2(ab, ab);
         const t = l2 ? Math.max(0, Math.min(1, -dot2(a, ab) / l2)) : 0;
         const q = add(a, mul(ab, t));
-        if (len(q) < best.d) best = { d: len(q), wi, i, q, dir: norm(ab) };
+        // străzile mari au prioritate (un panou de pe bulevard nu se leagă de o străduță laterală),
+        // iar podurile / pasajele doar dacă pinul e chiar pe ele
+        const cls = w.tags.highway || "", bridge = w.tags.bridge || w.tags.tunnel || (parseInt(w.tags.layer) || 0) !== 0;
+        const bonus = /^(motorway|trunk|primary)/.test(cls) ? 10 : /^secondary/.test(cls) ? 8 : /^tertiary/.test(cls) ? 4 : /^(service|road)$/.test(cls) ? -15 : 0;
+        const sc = len(q) - bonus + (bridge && len(q) > 3 ? 40 : 0);
+        if (sc < (best.sc ?? 1e9)) best = { d: len(q), sc, wi, i, q, dir: norm(ab) };
       }));
       return best;
     };
@@ -155,7 +162,9 @@
           const score = turn + ((w.tags.name || "") === curName ? 0 : 100);
           if (score < bestScore) { bestScore = score; found = wi; rev = r; }
         });
-        if (found < 0 || bestScore >= 100 + 35) break;            // altă stradă și viraj mare: ne oprim
+        // dacă nu se poate merge drept, urmăm strada de pe care vin mașinile (viraj de până la ~100°):
+        // șoferul vede panoul și înainte să vireze
+        if (found < 0 || bestScore >= 100 + 100) break;
         used.delete(found); used.add(found);
         cur = ways[found].pts.slice(); if (rev) cur.reverse(); idx = cur.length - 2;
       }
@@ -170,6 +179,13 @@
     let wk = walk(false);
     const leftOfRoad = wk.dir.x * (-wk.best.q.y) - wk.dir.y * (-wk.best.q.x) > 0;
     if (!wk.road.oneway && leftOfRoad) wk = walk(true);
+    // strada are prea puțin drum în fața panoului din sensul ăsta (ex. vine dintr-o fundătură)?
+    // atunci panoul se întoarce spre mașinile din sensul opus, dacă de acolo au mai mult drum
+    const reachOf = w => len(sub(w.back[0], w.best.q));
+    if (!wk.road.oneway && reachOf(wk) < 150) {
+      const alt = walk(!leftOfRoad);
+      if (reachOf(alt) > reachOf(wk) + 30) wk = alt;
+    }
     const { best, road, back, dir } = wk;
     const lanes = Math.min(Math.max(parseInt(road.tags.lanes) || 2, 1), 8);
     const right = { x: dir.y, y: -dir.x };
@@ -191,6 +207,38 @@
     }
     let n = mul(dir, -1);                               // fața spre mașinile care vin
     let mountedOn = null;
+    let moved = 0;
+    // panoul pe stâlp nu poate sta într-o clădire sau lipit de ea: căutăm cel mai apropiat loc liber de pin,
+    // între marginea carosabilului și clădiri (tot panoul, cu ambele capete, la cel puțin 1,5 m de pereți)
+    if (mount !== "wall") {
+      const rr = { x: -n.y, y: n.x };
+      const distToBuildings = p => {
+        let m = 1e9;
+        for (const b of buildings) {
+          if (pointInPoly(p, b.poly)) return -1;
+          for (let i = 0; i < b.poly.length - 1; i++) {
+            const a = b.poly[i], ab = sub(b.poly[i + 1], a), l2 = dot2(ab, ab);
+            const t = l2 ? Math.max(0, Math.min(1, dot2(sub(p, a), ab) / l2)) : 0;
+            m = Math.min(m, len(sub(p, add(a, mul(ab, t)))));
+          }
+        }
+        return m;
+      };
+      const W2 = (size.width || 12) / 2;
+      const free = p => [-W2, -W2 / 2, 0, W2 / 2, W2].every(x => distToBuildings(add(p, mul(rr, x))) >= 1.5)
+        && len(sub(p, best.q)) >= roadHalf + 1.5 - 0.01;
+      if (!free(c)) {
+        const out = best.d > 0.5 ? norm(mul(best.q, -1)) : right;   // dinspre drum spre pin
+        let bestP = null, bestD = 1e9;
+        for (let along = -24; along <= 24; along += 2) for (let off = roadHalf + 1.5; off <= roadHalf + 14; off += 0.5) {
+          const p = add(add(best.q, mul(dir, along)), mul(out, off));
+          const dd = len(sub(p, c));
+          if (dd < bestD && free(p)) { bestD = dd; bestP = p; }
+        }
+        if (!bestP) throw new Error("Nu e loc liber pentru un panou pe stâlp lângă pin (clădiri lipite de stradă). Mută pinul sau alege „Pe clădire”.");
+        moved = bestD; c = bestP;
+      }
+    }
     if (mount === "wall") {
       let bw = { d: 10 };   // panoul de clădire doar pe o fațadă aflată la cel mult 10 m de pin
       buildings.forEach((b, bi) => b.poly.forEach((a, i) => {
@@ -213,7 +261,7 @@
       pin, L, G, c, n, r: { x: -n.y, y: n.x }, drive, buildings, trees, mountedOn,
       W: size.width || 12, H: size.height || 4,
       E: mount === "wall" ? Math.max(6, (size.height || 4) / 2 + 4) : 6, mount,
-      roadName: road.tags.name || road.tags.highway, lanes, oneway: road.oneway,
+      roadName: road.tags.name || road.tags.highway, lanes, oneway: road.oneway, moved,
     };
   }
 
@@ -524,7 +572,8 @@
 
   // nivelul drumului (înălțime elipsoidală): din suprafața modelului 3D pe traseu, partea de jos (nu mașini, nu coroane)
   async function czRoadLevel(S) {
-    const scene = cz.viewer.scene, pts = S.drive.map(p => S.G(p));
+    // 5 puncte pe traseu (fiecare rază de sus în jos costă o randare; mai multe încetinesc mult)
+    const scene = cz.viewer.scene, pts = [200, 150, 80, 30, 10].map(d => S.G(viewpoint(S, d)));
     cz.viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(S.pin.lon, S.pin.lat - 0.0022, 380),
       orientation: { heading: 0, pitch: rad(-50), roll: 0 } });
     await czWait(5000);
@@ -733,7 +782,7 @@
   // ---------------------------------------------------------------- Vizibilitate pentru un pin: OSM (clădiri) + Cesium (copaci și restul)
   async function computeFor(loc, mount, onStatus) {
     const size = (campaign && campaign.billboardSize) || {};
-    const key = `v7|${loc.lat.toFixed(6)},${loc.lon.toFixed(6)}|${mount}|${size.width || 12}x${size.height || 4}`;
+    const key = `v10|${loc.lat.toFixed(6)},${loc.lon.toFixed(6)}|${mount}|${size.width || 12}x${size.height || 4}`;
     log(`${loc.id}: OSM`);
     const json = await overpass(loc.lat, loc.lon);
     const S = buildScene(json, { lat: loc.lat, lon: loc.lon }, size, mount);
@@ -895,7 +944,7 @@
         if (svg) svg.style.display = "none";
         if (overlayLabel) overlayLabel.textContent = "Street View + panou SightLine";
         const sub = scene.parentElement && scene.parentElement.querySelector(".caption-sub");
-        if (sub) sub.textContent = `Poze reale Street View · ${S.roadName} · vizibilitate: ${store[loc.id] && /^osm\+cesium/.test(store[loc.id].source) ? "clădiri OSM + model 3D Google" + (store[loc.id].source.endsWith("foto") ? ", verificat cu poza" : "") : "clădiri OSM"}`;
+        if (sub) sub.textContent = `${S.moved > 0.5 ? `Panoul mutat cu ${S.moved.toFixed(0)} m față de pin (pinul era în / lângă o clădire) · ` : ""}Poze reale Street View · ${S.roadName} · vizibilitate: ${store[loc.id] && /^osm\+cesium/.test(store[loc.id].source) ? "clădiri OSM + model 3D Google" + (store[loc.id].source.endsWith("foto") ? ", verificat cu poza" : "") : "clădiri OSM"}`;
         paint();
       } catch (e) { msg("Nu am putut pregăti vederea: " + e.message); }
     }
