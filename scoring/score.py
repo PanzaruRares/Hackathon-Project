@@ -207,8 +207,9 @@ def locations_from_input(data: dict, roads: dict | None = None) -> list[Location
             address=info["road_name"],
         ))
         print(f"  {locations[-1].location_id}: {info['road_name']} ({info['road_type']}, "
-              f"{info['lanes']} benzi, {info['speed_kmh']:.0f} km/h, "
-              f"la {info['distance_to_road_m']} m de pin)")
+              f"{info['lanes']} benzi, {info['lanes_toward_billboard']:g} pe sensul panoului, "
+              f"factor retea {info['centrality_factor']:.2f}, {info['speed_kmh']:.0f} km/h, "
+              f"la {info['distance_to_road_m']} m de pin) -> {info['daily_cars_est']} masini/zi")
     return locations
 
 
@@ -222,6 +223,8 @@ def analyze(data: dict) -> dict:
         s["road_name"] = road["road_name"]
         s["road_type"] = road["road_type"]
         s["lanes"] = road["lanes"]
+        s["lanes_toward_billboard"] = road["lanes_toward_billboard"]
+        s["centrality_factor"] = road["centrality_factor"]
         s["speed_kmh"] = road["speed_kmh"]
         s["visible_surface_pct"] = 100 - s["occluded_pct"]
     best = best_location(ranked)

@@ -74,8 +74,17 @@ def test_traffic_estimates():
     assert lane_count({"highway": "primary", "lanes": "6"}) == 6
     assert lane_count({"highway": "primary"}) == 4
     assert lane_count({"highway": "primary", "oneway": "yes"}) == 2
-    assert estimate_daily_cars({"highway": "primary", "lanes": "6"}) == 60000
-    assert estimate_daily_cars({"highway": "secondary_link", "lanes": "2"}) == 14000
+    # dublu sens: se numara doar sensul panoului (jumatate din benzi)
+    assert estimate_daily_cars({"highway": "primary", "lanes": "6"}) == 30000
+    # sens unic: toate benzile
+    assert estimate_daily_cars({"highway": "primary", "lanes": "2", "oneway": "yes"}) == 20000
+    assert estimate_daily_cars({"highway": "secondary_link", "lanes": "2"}) == 7000
+    assert estimate_daily_cars({"highway": "primary", "lanes:forward": "2", "lanes:backward": "4",
+                                "lanes": "6"}) == 30000
+    # factorul de retea inmulteste
+    assert estimate_daily_cars({"highway": "primary", "lanes": "6"}, 1.5) == 45000
+    # plafon de capacitate: 10.000 x 2.0 = 20.000/banda -> limitat la 15.000/banda
+    assert estimate_daily_cars({"highway": "primary", "lanes": "6"}, 2.0) == 45000
     assert math.isclose(estimate_visible_seconds(54, 4), 10.0)   # 150 m la 15 m/s
 
 
@@ -97,6 +106,36 @@ def test_billboard_prefers_main_road_nearby():
     departe = {"tags": {"name": "autostrada", "highway": "motorway", "lanes": "6"},
                "geometry": [{"lat": 44.001, "lon": 25.999}, {"lat": 44.001, "lon": 26.001}]}
     assert billboard_road(lat, lon, [mica, bulevard, departe])["tags"]["name"] == "bulevard"
+
+
+
+# ---------- centrality.py ----------
+
+def test_centrality_bridge_road_is_busier():
+    """Doua cartiere legate de o singura strada: strada-pod trebuie sa iasa cea mai centrala."""
+    from centrality import centrality_factors, percentile_to_factor, way_betweenness
+
+    assert percentile_to_factor(0) == 0.5
+    assert math.isclose(percentile_to_factor(0.5), 1.0)
+    assert percentile_to_factor(1) == 2.0
+
+    def way(i, pts, highway="residential"):
+        return {"id": i, "tags": {"highway": highway},
+                "geometry": [{"lat": a, "lon": b} for a, b in pts]}
+
+    ways = [
+        # cartierul vest (patrat) si cartierul est (patrat)
+        way(1, [(0, 0), (0, 0.001)]), way(2, [(0, 0.001), (0.001, 0.001)]),
+        way(3, [(0.001, 0.001), (0.001, 0), (0, 0)]),
+        way(4, [(0, 0.003), (0, 0.004)]), way(5, [(0, 0.004), (0.001, 0.004)]),
+        way(6, [(0.001, 0.004), (0.001, 0.003), (0, 0.003)]),
+        # podul dintre ele
+        way(7, [(0, 0.001), (0, 0.003)]),
+    ]
+    bt = way_betweenness(ways, sources=100)
+    assert bt[7] == max(bt.values())
+    factors = centrality_factors(ways, bt)
+    assert factors[7] == 2.0
 
 
 if __name__ == "__main__":

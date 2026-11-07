@@ -172,7 +172,7 @@ def billboard_road(lat: float, lon: float, ways: list[dict]) -> dict | None:
         return None
     limit = distance_to_way_m(lat, lon, closest) + TOLERANTA_M
     candidates = [w for w in ways if distance_to_way_m(lat, lon, w) <= limit]
-    return max(candidates, key=lambda w: estimate_daily_cars(w.get("tags", {})))
+    return max(candidates, key=lambda w: estimate_daily_cars(w.get("tags", {}), centrality_for(w)))
 
 
 # ---------- estimari ----------
@@ -201,9 +201,42 @@ def lane_count(tags: dict) -> int:
         return max(1, default // 2) if tags.get("oneway") == "yes" else default
 
 
-def estimate_daily_cars(tags: dict) -> int:
-    per_lane = MASINI_PE_BANDA_PE_ZI.get(road_type(tags), 800)
-    return per_lane * lane_count(tags)
+def lanes_toward_billboard(tags: dict) -> float:
+    """Benzile din sensul care vede panoul (un panou are o singura fata).
+
+    Sens unic: toate benzile. Dublu sens: jumatate (sau media lanes:forward/backward).
+    Asa, un bulevard desenat ca o singura linie in OSM si unul desenat pe sensuri
+    separate se compara corect.
+    """
+    if tags.get("oneway") in ("yes", "-1"):
+        return float(lane_count(tags))
+    try:
+        return (float(tags["lanes:forward"]) + float(tags["lanes:backward"])) / 2
+    except (KeyError, ValueError):
+        return lane_count(tags) / 2
+
+
+# Plafon fizic: cate masini pe zi poate duce o banda (in oras, cu semafoare, ~15.000).
+CAPACITATE_MAX_PE_BANDA_PE_ZI = {"motorway": 25000, "trunk": 20000}
+CAPACITATE_MAX_IMPLICITA = 15000
+
+
+def estimate_daily_cars(tags: dict, centrality: float = 1.0) -> int:
+    """Masini pe zi in sensul panoului = masini/banda (tip drum) x factor retea x benzi pe sens.
+
+    Valoarea pe banda nu poate depasi capacitatea fizica a unei benzi.
+    """
+    kind = road_type(tags)
+    per_lane = MASINI_PE_BANDA_PE_ZI.get(kind, 800) * centrality
+    per_lane = min(per_lane, CAPACITATE_MAX_PE_BANDA_PE_ZI.get(kind, CAPACITATE_MAX_IMPLICITA))
+    return int(round(per_lane * lanes_toward_billboard(tags), -2))
+
+
+def centrality_for(road: dict) -> float:
+    """Factorul de centralitate din reteaua de strazi (centrality.py); 1.0 daca nu e calculat."""
+    from centrality import factor_for_way
+    f = factor_for_way(road.get("id"))
+    return 1.0 if f is None else f
 
 
 def estimate_speed_kmh(tags: dict) -> float:
@@ -224,14 +257,17 @@ def analyze_coordinates(lat: float, lon: float, billboard_height_m: float = 4) -
         raise RuntimeError(f"Niciun drum auto langa {lat}, {lon}")
     tags = road.get("tags", {})
     speed = estimate_speed_kmh(tags)
+    centrality = centrality_for(road)
     return {
         "road_name": tags.get("name", "(fara nume)"),
         "road_type": road_type(tags),
         "lanes": lane_count(tags),
-        "oneway": tags.get("oneway") == "yes",
+        "lanes_toward_billboard": lanes_toward_billboard(tags),
+        "oneway": tags.get("oneway") in ("yes", "-1"),
+        "centrality_factor": centrality,
         "distance_to_road_m": round(distance_to_way_m(lat, lon, road), 1),
         "speed_kmh": speed,
-        "daily_cars_est": estimate_daily_cars(tags),
+        "daily_cars_est": estimate_daily_cars(tags, centrality),
         "visible_seconds": round(estimate_visible_seconds(speed, billboard_height_m), 2),
         "occluded_pct": PROCENT_ACOPERIT_IMPLICIT,
     }
@@ -241,5 +277,8 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "prefetch":
         print(f"Descarc drumurile din zona {ZONA_DEMO} (poate dura pana la 2-3 minute)...")
         print(f"Gata: {prefetch_area()} drumuri salvate in {_area_file(ZONA_DEMO)}")
+        from centrality import compute_for_area
+        print("Calculez centralitatea strazilor (o data, ~1 minut)...")
+        compute_for_area(_area_file(ZONA_DEMO))
     else:
         print("Folosire: python3 scoring/traffic.py prefetch")
