@@ -196,7 +196,16 @@ def locations_from_input(data: dict, roads: dict | None = None) -> list[Location
         price = item["monthly_price_eur"]
         if isinstance(price, list):
             price = tuple(price)
-        info = analyze_coordinates(lat, lon, height)
+        try:
+            info = analyze_coordinates(lat, lon, height)
+        except RuntimeError as e:
+            # un pin cu probleme (fara strada langa el, OSM indisponibil) nu strica restul:
+            # are 0 masini, deci ajunge ultimul in clasament, cu motivul in "error"
+            print(f"  {item['location_id']}: EROARE {e}")
+            info = {"road_name": "(nicio strada gasita langa pin)", "road_type": "-", "lanes": 0,
+                    "lanes_toward_billboard": 0, "centrality_factor": 1.0, "distance_to_road_m": None,
+                    "speed_kmh": 0, "daily_cars_est": 0, "visible_seconds": 0, "occluded_pct": 100,
+                    "error": str(e)}
         info["occluded_source"] = "estimat" if item["occluded_pct"] is None else "masurat"
         if roads is not None:
             roads[item["location_id"]] = info
@@ -210,6 +219,8 @@ def locations_from_input(data: dict, roads: dict | None = None) -> list[Location
             occluded_pct=info["occluded_pct"] if item["occluded_pct"] is None else item["occluded_pct"],
             address=info["road_name"],
         ))
+        if "error" in info:
+            continue
         print(f"  {locations[-1].location_id}: {info['road_name']} ({info['road_type']}, "
               f"{info['lanes']} benzi, {info['lanes_toward_billboard']:g} pe sensul panoului, "
               f"factor retea {info['centrality_factor']:.2f}, {info['speed_kmh']:.0f} km/h, "
@@ -232,6 +243,9 @@ def analyze(data: dict) -> dict:
         s["speed_kmh"] = road["speed_kmh"]
         s["visible_surface_pct"] = 100 - s["occluded_pct"]
         s["occluded_source"] = road["occluded_source"]
+        if "error" in road:
+            s["error"] = road["error"]
+            s["visible_surface_pct"] = 0
     best = best_location(ranked)
     return {
         "best_location_id": best["location_id"] if best else None,

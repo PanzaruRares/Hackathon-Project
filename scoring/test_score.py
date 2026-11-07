@@ -138,6 +138,29 @@ def test_centrality_bridge_road_is_busier():
     assert factors[7] == 2.0
 
 
+def test_bad_pin_does_not_break_others():
+    """Un pin fara strada (ex. in mijlocul unui parc) ajunge ultimul; restul se calculeaza."""
+    import score
+    import traffic
+
+    def fake(lat, lon, height=4):
+        if lat == 0:
+            raise RuntimeError("Niciun drum auto")
+        return {"road_name": "Bulevard", "road_type": "primary", "lanes": 4, "lanes_toward_billboard": 2,
+                "centrality_factor": 1.0, "distance_to_road_m": 1, "speed_kmh": 50,
+                "daily_cars_est": 20000, "visible_seconds": 10, "occluded_pct": 20}
+
+    original = traffic.analyze_coordinates
+    traffic.analyze_coordinates = fake
+    try:
+        r = score.analyze({"locations": [{"id": "parc", "lat": 0, "lon": 0, "monthlyPriceEur": 100},
+                                         {"id": "bulevard", "lat": 1, "lon": 1, "monthlyPriceEur": 3000}]})
+    finally:
+        traffic.analyze_coordinates = original
+    assert r["best_location_id"] == "bulevard"
+    assert r["locations"][-1]["location_id"] == "parc" and "error" in r["locations"][-1]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in dict(globals()).items() if k.startswith("test_")]
     for t in tests:

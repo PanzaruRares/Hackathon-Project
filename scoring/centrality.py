@@ -32,7 +32,7 @@ VITEZA_TRASEU_KMH = {
     "motorway": 90, "trunk": 70, "primary": 50, "secondary": 40, "tertiary": 35,
     "unclassified": 30, "residential": 25, "living_street": 10,
 }
-NUMAR_SURSE = 1000         # cate puncte de plecare simulam (esantion, determinist)
+NUMAR_SURSE = 2000         # cate puncte de plecare simulam (esantion, determinist)
 SEED = 42
 FACTOR_MIN, FACTOR_MAX = 0.5, 2.0
 
@@ -49,11 +49,19 @@ def _segment_m(a: dict, b: dict) -> float:
 
 
 def build_graph(ways: list[dict]):
-    """Graf orientat: noduri = puncte (lat, lon), muchii = segmente de strada.
+    """Graf orientat: noduri = intersectii si capete de strada, muchii = bucati de strada intre ele.
 
+    Punctele intermediare (doar forma curbei) sunt comasate, ca graful sa fie mic.
     Strazile cu sens unic au muchii doar in sensul de mers.
     Intoarce (adiacenta, muchii_pe_strada).
     """
+    # un punct e nod daca e capat de strada sau apare de mai multe ori (intersectie)
+    seen: dict[tuple, int] = {}
+    for way in ways:
+        for p in way["geometry"]:
+            k = (p["lat"], p["lon"])
+            seen[k] = seen.get(k, 0) + 1
+
     node_id: dict[tuple, int] = {}
     adj: list[list[tuple[int, float, int]]] = []
     edges_per_way: dict[int, int] = {}
@@ -65,17 +73,26 @@ def build_graph(ways: list[dict]):
             adj.append([])
         return node_id[key]
 
+    def pieces(g: list[dict]):
+        """Imparte strada la noduri: (punct_start, punct_final, lungime_m)."""
+        start, length = g[0], 0.0
+        for i in range(1, len(g)):
+            length += _segment_m(g[i - 1], g[i])
+            k = (g[i]["lat"], g[i]["lon"])
+            if i == len(g) - 1 or seen[k] > 1:
+                yield start, g[i], length
+                start, length = g[i], 0.0
+
     for way in ways:
         tags = way.get("tags", {})
         speed = VITEZA_TRASEU_KMH.get(_road_type(tags), 25) / 3.6
         oneway = tags.get("oneway")
-        g = way["geometry"]
         count = 0
-        for a, b in zip(g, g[1:]):
+        for a, b, length in pieces(way["geometry"]):
             u, v = nid(a), nid(b)
             if u == v:
                 continue
-            t = _segment_m(a, b) / speed
+            t = length / speed
             if oneway != "-1":           # sensul desenat (sau ambele sensuri)
                 adj[u].append((v, t, way["id"]))
                 count += 1

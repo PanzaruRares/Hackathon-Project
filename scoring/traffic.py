@@ -23,11 +23,11 @@ OVERPASS_URLS = [
     "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 ]
-OVERPASS_TIMEOUT_S = 30
+OVERPASS_TIMEOUT_S = 20
 
-# Zona descarcata o singura data (Dorobanti + centru): pinurile din ea se calculeaza
+# Zona descarcata o singura data (tot Bucurestiul): pinurile din ea se calculeaza
 # instant si fara internet.  Descarcare:  python3 scoring/traffic.py prefetch
-ZONA_DEMO = (44.430, 26.060, 44.485, 26.130)  # sud, vest, nord, est
+ZONA_DEMO = (44.33, 25.96, 44.55, 26.25)  # sud, vest, nord, est
 
 # Masini pe zi pe O banda, dupa tipul drumului (estimare de pornire, de calibrat).
 MASINI_PE_BANDA_PE_ZI = {
@@ -82,38 +82,61 @@ def _area_file(bbox: tuple) -> Path:
     return CACHE_DIR / f"overpass_area_{s}_{w}_{n}_{e}.json"
 
 
+TAGURI_PASTRATE = ("highway", "name", "lanes", "lanes:forward", "lanes:backward",
+                   "oneway", "maxspeed", "junction")
+
+
 def prefetch_area(bbox: tuple = ZONA_DEMO) -> int:
-    """Descarca toate drumurile auto din bbox in data/cache/. Intoarce numarul de drumuri."""
-    query = (f'[out:json][timeout:120];way{bbox}[highway~"^({DRUMURI_AUTO})(_link)?$"];'
+    """Descarca toate drumurile auto din bbox in data/cache/ (compactat). Intoarce numarul de drumuri."""
+    query = (f'[out:json][timeout:300];way{bbox}[highway~"^({DRUMURI_AUTO})(_link)?$"];'
              f'out tags geom;')
-    data = _fetch_overpass(query, timeout_s=180)
+    data = _fetch_overpass(query, timeout_s=400)
+    ways = [{"type": "way", "id": e["id"],
+             "tags": {k: v for k, v in e.get("tags", {}).items() if k in TAGURI_PASTRATE},
+             "geometry": [{"lat": round(p["lat"], 6), "lon": round(p["lon"], 6)} for p in e["geometry"]]}
+            for e in data.get("elements", []) if e.get("type") == "way" and e.get("geometry")]
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    _area_file(bbox).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    _area_file(bbox).write_text(json.dumps({"elements": ways}, ensure_ascii=False, separators=(",", ":")),
+                                encoding="utf-8")
     _loaded_areas.clear()
-    return len(data.get("elements", []))
+    return len(ways)
 
 
-_loaded_areas: dict[Path, tuple[tuple, list[dict]]] = {}
+# zona -> (bbox, [(lat_min, lat_max, lon_min, lon_max, strada)])
+_loaded_areas: dict[Path, tuple[tuple, list[tuple]]] = {}
+_areas_lock = threading.Lock()
 
 
-def _cached_areas() -> list[tuple[tuple, list[dict]]]:
-    for f in CACHE_DIR.glob("overpass_area_*.json"):
-        if f not in _loaded_areas:
-            bbox = tuple(float(x) for x in f.stem.removeprefix("overpass_area_").split("_"))
-            ways = [e for e in json.loads(f.read_text(encoding="utf-8")).get("elements", [])
-                    if e.get("type") == "way" and e.get("geometry")]
-            _loaded_areas[f] = (bbox, ways)
-    return list(_loaded_areas.values())
+def _cached_areas() -> list[tuple[tuple, list[tuple]]]:
+    with _areas_lock:
+        for f in CACHE_DIR.glob("overpass_area_*.json"):
+            if f not in _loaded_areas:
+                bbox = tuple(float(x) for x in f.stem.removeprefix("overpass_area_").split("_"))
+                indexed = []
+                for e in json.loads(f.read_text(encoding="utf-8")).get("elements", []):
+                    if e.get("type") == "way" and e.get("geometry"):
+                        lats = [p["lat"] for p in e["geometry"]]
+                        lons = [p["lon"] for p in e["geometry"]]
+                        indexed.append((min(lats), max(lats), min(lons), max(lons), e))
+                _loaded_areas[f] = (bbox, indexed)
+        return list(_loaded_areas.values())
 
 
 def _roads_from_area(lat: float, lon: float, radius_m: int) -> list[dict] | None:
     """Drumurile din zona descarcata, daca punctul (cu raza lui) e in interiorul ei."""
     margin_lat = radius_m / 111_320
     margin_lon = radius_m / (111_320 * math.cos(math.radians(lat)))
-    for (s, w, n, e), ways in _cached_areas():
+    for (s, w, n, e), indexed in _cached_areas():
         if s + margin_lat <= lat <= n - margin_lat and w + margin_lon <= lon <= e - margin_lon:
-            return [way for way in ways if distance_to_way_m(lat, lon, way) <= radius_m]
+            # filtru rapid pe dreptunghiul strazii, apoi distanta exacta
+            return [way for la0, la1, lo0, lo1, way in indexed
+                    if la0 - margin_lat <= lat <= la1 + margin_lat
+                    and lo0 - margin_lon <= lon <= lo1 + margin_lon
+                    and distance_to_way_m(lat, lon, way) <= radius_m]
     return None
+
+
+RAZA_DESCARCARE_M = 150   # in afara zonei: o singura cerere pe pin, apoi filtram local
 
 
 def roads_near(lat: float, lon: float, radius_m: int = 50) -> list[dict]:
@@ -121,17 +144,25 @@ def roads_near(lat: float, lon: float, radius_m: int = 50) -> list[dict]:
     from_area = _roads_from_area(lat, lon, radius_m)
     if from_area is not None:
         return from_area
-    cache_file = CACHE_DIR / f"overpass_{lat:.5f}_{lon:.5f}_r{radius_m}.json"
-    if cache_file.exists():
+    old_cache = CACHE_DIR / f"overpass_{lat:.5f}_{lon:.5f}_r{radius_m}.json"
+    cache_file = CACHE_DIR / f"overpass_{lat:.5f}_{lon:.5f}_r{RAZA_DESCARCARE_M}.json"
+    if old_cache.exists():
+        data = json.loads(old_cache.read_text(encoding="utf-8"))
+    elif cache_file.exists():
         data = json.loads(cache_file.read_text(encoding="utf-8"))
     else:
-        query = (f'[out:json][timeout:25];'
-                 f'way(around:{radius_m},{lat},{lon})[highway~"^({DRUMURI_AUTO})(_link)?$"];'
+        query = (f'[out:json][timeout:{OVERPASS_TIMEOUT_S}];'
+                 f'way(around:{RAZA_DESCARCARE_M},{lat},{lon})[highway~"^({DRUMURI_AUTO})(_link)?$"];'
                  f'out tags geom;')
-        data = _fetch_overpass(query)
+        try:
+            data = _fetch_overpass(query)
+        except RuntimeError as e:
+            raise RuntimeError(f"pinul {lat:.5f}, {lon:.5f} e in afara Bucurestiului (zona salvata) "
+                               f"si OpenStreetMap nu raspunde acum. Incearca din nou peste un minut.") from e
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-    return [e for e in data.get("elements", []) if e.get("type") == "way" and e.get("geometry")]
+    ways = [e for e in data.get("elements", []) if e.get("type") == "way" and e.get("geometry")]
+    return [w for w in ways if distance_to_way_m(lat, lon, w) <= radius_m]
 
 
 # ---------- geometrie ----------
@@ -275,10 +306,10 @@ def analyze_coordinates(lat: float, lon: float, billboard_height_m: float = 4) -
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "prefetch":
-        print(f"Descarc drumurile din zona {ZONA_DEMO} (poate dura pana la 2-3 minute)...")
+        print(f"Descarc drumurile din zona {ZONA_DEMO} (poate dura 1-5 minute)...")
         print(f"Gata: {prefetch_area()} drumuri salvate in {_area_file(ZONA_DEMO)}")
         from centrality import compute_for_area
-        print("Calculez centralitatea strazilor (o data, ~1 minut)...")
+        print("Calculez centralitatea strazilor (o data, ~4 minute)...")
         compute_for_area(_area_file(ZONA_DEMO))
     else:
         print("Folosire: python3 scoring/traffic.py prefetch")
